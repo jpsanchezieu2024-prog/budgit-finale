@@ -35,14 +35,20 @@ def _load_firebase_credentials():
          never be committed to a public repository.
     """
     # 1. Streamlit secrets (production on Streamlit Cloud)
+    secrets_problem = None
     try:
-        import streamlit as st
-        if hasattr(st, "secrets") and "firebase" in st.secrets:
-            return credentials.Certificate(dict(st.secrets["firebase"]))
-    except Exception:
-        # Streamlit not installed yet, secrets.toml missing, etc. —
-        # fall through to the next loader.
-        pass
+        import streamlit as st  # type: ignore
+    except ImportError:
+        st = None
+
+    if st is not None:
+        try:
+            # Touching st.secrets raises if there's no secrets.toml
+            # or if the file is malformed. Treat both as "not set".
+            if "firebase" in st.secrets:
+                return credentials.Certificate(dict(st.secrets["firebase"]))
+        except Exception as e:
+            secrets_problem = e  # remember to surface in the final error
 
     # 2. Single environment variable holding the JSON blob
     raw = os.environ.get("FIREBASE_KEY_JSON")
@@ -50,8 +56,26 @@ def _load_firebase_credentials():
         import json
         return credentials.Certificate(json.loads(raw))
 
-    # 3. Local file (development)
-    return credentials.Certificate("firebase_key.json")
+    # 3. Local file (development) — only attempt if it actually exists,
+    #    so deployments don't crash with a misleading FileNotFoundError.
+    if os.path.exists("firebase_key.json"):
+        return credentials.Certificate("firebase_key.json")
+
+    # Nothing worked. Raise a clear, actionable error instead of letting
+    # firebase_admin crash with a generic FileNotFoundError.
+    hint = (
+        "No Firebase credentials were found.\n\n"
+        "On Streamlit Cloud: open Manage app → Settings → Secrets and add "
+        "your service-account JSON as a [firebase] TOML table. After "
+        "saving, the app reboots automatically.\n\n"
+        "On other hosts: set the FIREBASE_KEY_JSON environment variable "
+        "to the contents of your service-account JSON.\n\n"
+        "For local development: place firebase_key.json next to "
+        "database.py (it's already in .gitignore)."
+    )
+    if secrets_problem is not None:
+        hint += f"\n\nWhile reading st.secrets we got: {secrets_problem!r}"
+    raise RuntimeError(hint)
 
 
 # Connect to Firebase once
