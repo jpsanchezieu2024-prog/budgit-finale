@@ -1,0 +1,209 @@
+"""
+Budgit — main entry point.
+Run with: streamlit run "🏠_Home.py"
+
+The filename matters: Streamlit's multipage navigation in the sidebar uses
+the script's filename as the page label. Naming this file `🏠_Home.py`
+makes the sidebar say "🏠 Home" instead of "app".
+"""
+
+import streamlit as st
+from datetime import datetime, timedelta
+
+import database as db
+from models import Cart
+from state import init_state, current_user, SUPERMARKETS, rebuild_bst, load_item_directory
+from theme import apply_theme, budget_tree, budget_pill, budget_advice, budget_color
+
+
+# Keys that belong to the *previous* user and must never leak into the
+# next session in the same browser tab.
+_USER_SCOPED_KEYS = (
+    "cart", "bst", "shop_store", "item_directory_ht",
+    "grocery_items", "grocery_list_user", "last_typed_name",
+    "item_name",
+)
+
+
+def _switch_user(new_uid: str) -> None:
+    """Clear everything tied to the previous user, then load the new one."""
+    for k in _USER_SCOPED_KEYS:
+        st.session_state.pop(k, None)
+    st.session_state.cart = Cart()
+    st.session_state.user_id = new_uid
+    rebuild_bst(new_uid)
+    load_item_directory()
+
+
+st.set_page_config(page_title="🏠 Home", page_icon="🏠", layout="centered")
+apply_theme()
+init_state()
+
+
+# -------------------------------------------------------
+# Auth screen
+# -------------------------------------------------------
+def _welcome():
+    st.markdown(
+        """
+        <div style="text-align:center; padding: 2rem 0 1rem;">
+          <div style="font-size:4rem">🛒</div>
+          <h1 style="color:#40B391; margin:0.2rem 0; font-size:2.5rem;">Budgit</h1>
+          <p style="color:#7FB5A0; font-size:1.1rem;">Never panic at the checkout again.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        tab_login, tab_signup = st.tabs(["Log in", "Sign up"])
+
+        with tab_login:
+            with st.form("login"):
+                email = st.text_input("Email")
+                pw = st.text_input("Password", type="password")
+                if st.form_submit_button("Log in", type="primary", use_container_width=True):
+                    row = db.get_user_by_email(email)
+                    if row is None or not db.verify_password(pw, row["password_hash"], row["salt"]):
+                        st.error("Wrong email or password.")
+                    else:
+                        _switch_user(row["id"])
+                        st.rerun()
+
+        with tab_signup:
+            with st.form("signup"):
+                name = st.text_input("Name")
+                email = st.text_input("Email")
+                pw = st.text_input("Password", type="password")
+                budget = st.number_input(
+                    "Weekly grocery budget (€)",
+                    min_value=1.0, max_value=1000.0, value=40.0, step=5.0,
+                    help="How much do you want to spend on groceries per week?"
+                )
+                store = st.selectbox("Preferred supermarket", SUPERMARKETS)
+
+                if st.form_submit_button("Create account", type="primary", use_container_width=True):
+                    if not name or not email or not pw:
+                        st.error("All fields are required.")
+                    elif db.get_user_by_email(email) is not None:
+                        st.error("An account with that email already exists.")
+                    else:
+                        uid = db.create_user(
+                            name=name, email=email, password=pw,
+                            weekly_budget=budget, preferred_store=store,
+                        )
+                        _switch_user(uid)
+                        st.success("Welcome to Budgit! 🎉")
+                        st.rerun()
+
+
+# -------------------------------------------------------
+# Dashboard
+# -------------------------------------------------------
+def _dashboard():
+    user = current_user()
+
+    # --- Week stats ---
+    sessions = db.get_sessions(user.id)
+    week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
+    week_sessions = [s for s in sessions if s["created_at"] > week_ago]
+    week_spend = sum(s["total"] for s in week_sessions)
+    remaining = user.weekly_budget - week_spend
+    pct = (week_spend / user.weekly_budget) if user.weekly_budget > 0 else 0
+
+    # Days left in the week
+    today = datetime.utcnow()
+    days_left = 7 - today.weekday()  # days until Sunday
+
+    # --- Header ---
+    first_name = user.name.split(" ")[0]
+    st.markdown(f"## Hey, {first_name}! 👋")
+
+    # --- Budget card (remaining changes colour as you eat into the budget) ---
+    rem_color = budget_color(pct)
+    st.markdown(
+        f"""
+        <div class="budgit-accent">
+          <div style="font-size:3.5rem; margin-bottom:0.5rem;">{budget_tree(pct)}</div>
+          <div style="color:#7FB5A0; font-size:0.95rem; margin-bottom:0.3rem;">Remaining this week</div>
+          <p class="budgit-total" style="color:{rem_color} !important;">€{remaining:,.2f}
+            <span style="color:#4A7A6A; font-size:1.1rem;"> / €{user.weekly_budget:,.2f}</span>
+          </p>
+          <div style="margin: 0.5rem 0;">{budget_pill(pct)}</div>
+          <div class="budgit-total-label">{min(pct,1.0)*100:.0f}% of weekly budget used</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.progress(min(pct, 1.0))
+
+    # --- Budget advice ---
+    advice = budget_advice(pct, remaining, days_left)
+    st.info(advice)
+
+    # --- Breakdown ---
+    st.markdown("#### This week at a glance")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Spent", f"€{week_spend:,.2f}")
+    c2.metric("Remaining", f"€{remaining:,.2f}")
+    c3.metric("Shops", len(week_sessions))
+    c4.metric("Days left", days_left)
+
+    # --- Daily budget tip ---
+    if days_left > 0 and remaining > 0:
+        daily_budget = remaining / days_left
+        st.markdown(
+            f"<div class='budgit-card' style='text-align:center;'>"
+            f"💡 You can spend <b style='color:#40B391;'>€{daily_budget:.2f}/day</b> "
+            f"for the next {days_left} day{'s' if days_left != 1 else ''} to stay on track."
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    # --- Navigation ---
+    st.divider()
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        if st.button("🛒 Shop", type="primary", use_container_width=True):
+            st.switch_page("pages/1_🛒_Shop.py")
+    with c2:
+        if st.button("📝 List", use_container_width=True):
+            st.switch_page("pages/0_📝_List.py")
+    with c3:
+        if st.button("📜 History", use_container_width=True):
+            st.switch_page("pages/2_📜_History.py")
+    with c4:
+        if st.button("📊 Compare", use_container_width=True):
+            st.switch_page("pages/3_📊_Compare.py")
+
+    # --- Lifetime stats ---
+    st.divider()
+    st.markdown("#### All time")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total sessions", len(sessions))
+    c2.metric("Total spent", f"€{sum(s['total'] for s in sessions):,.2f}")
+    c3.metric("Products learned", len(db.get_all_products(user.id)))
+
+
+# -------------------------------------------------------
+# Entry point
+# -------------------------------------------------------
+if st.session_state.user_id is None:
+    _welcome()
+else:
+    _dashboard()
+
+    with st.sidebar:
+        user = current_user()
+        if user:
+            st.markdown(f"**👤 {user.name}**")
+            st.caption(user.email)
+            st.caption(f"🏬 {user.preferred_store or '—'}")
+            st.divider()
+            if st.button("⚙️ Profile", use_container_width=True):
+                st.switch_page("pages/4_⚙️_Profile.py")
+            if st.button("🚪 Log out", use_container_width=True):
+                for k in ("user_id", "cart", "bst", "shop_store", "item_directory_ht", "grocery_items", "grocery_list_user"):
+                    st.session_state.pop(k, None)
+                st.rerun()

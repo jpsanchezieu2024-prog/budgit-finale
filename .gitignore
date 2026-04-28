@@ -1,0 +1,18 @@
+# Python bytecode cache — regenerated automatically, never commit
+__pycache__/
+*.pyc
+*.pyo
+
+# Local SQLite (legacy — Firestore is the real DB now)
+budgit.db
+
+# Firebase service-account key — secret, must NEVER be committed
+firebase_key.json
+
+# macOS / IDE noise
+.DS_Store
+.Rhistory
+.idea/
+.vscode/
+.venv/
+venv/
