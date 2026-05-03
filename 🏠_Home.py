@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 
 import database as db
 from models import Cart
-from state import init_state, current_user, SUPERMARKETS, rebuild_bst, load_item_directory
+from state import init_state, current_user, SUPERMARKETS, rebuild_bst, load_item_directory, render_sidebar
 from theme import apply_theme, budget_tree, budget_pill, budget_advice, budget_color
 
 
@@ -69,7 +69,9 @@ def _welcome():
                         st.error("Wrong email or password.")
                     else:
                         _switch_user(row["id"])
-                        st.rerun()
+                        # Drop the user straight into the shopping page —
+                        # that's the primary action of the app.
+                        st.switch_page("pages/1_🛒_Shop.py")
 
         with tab_signup:
             with st.form("signup"):
@@ -94,8 +96,10 @@ def _welcome():
                             weekly_budget=budget, preferred_store=store,
                         )
                         _switch_user(uid)
-                        st.success("Welcome to Budgit! 🎉")
-                        st.rerun()
+                        # Flag this user as brand-new so the Shop page
+                        # can show a one-shot welcome banner.
+                        st.session_state.first_time_user = True
+                        st.switch_page("pages/1_🛒_Shop.py")
 
 
 # -------------------------------------------------------
@@ -192,18 +196,7 @@ def _dashboard():
 if st.session_state.user_id is None:
     _welcome()
 else:
+    user = current_user()
+    if user is not None:
+        render_sidebar(user)
     _dashboard()
-
-    with st.sidebar:
-        user = current_user()
-        if user:
-            st.markdown(f"**👤 {user.name}**")
-            st.caption(user.email)
-            st.caption(f"🏬 {user.preferred_store or '—'}")
-            st.divider()
-            if st.button("⚙️ Profile", use_container_width=True):
-                st.switch_page("pages/4_⚙️_Profile.py")
-            if st.button("🚪 Log out", use_container_width=True):
-                for k in ("user_id", "cart", "bst", "shop_store", "item_directory_ht", "grocery_items", "grocery_list_user"):
-                    st.session_state.pop(k, None)
-                st.rerun()

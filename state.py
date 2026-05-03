@@ -48,6 +48,34 @@ def require_login():
     return user
 
 
+# Keys that belong to a logged-in user. Cleared on logout so two
+# different users sharing the same browser tab can never see each
+# other's cart, BST, or grocery list.
+_USER_SCOPED_KEYS = (
+    "user_id", "cart", "bst", "shop_store", "item_directory_ht",
+    "grocery_items", "grocery_list_user", "first_time_user",
+    "last_typed_name", "item_name", "session_just_saved",
+)
+
+
+def render_sidebar(user) -> None:
+    """
+    Standard sidebar shown on every authenticated page: user identity,
+    quick links, and a log-out button. Streamlit's auto-page navigation
+    already lists all the pages above this; we add identity + actions.
+    """
+    with st.sidebar:
+        st.markdown(f"**👤 {user.name}**")
+        st.caption(user.email)
+        st.caption(f"🏬 {user.preferred_store or '—'}")
+        st.divider()
+        if st.button("🚪 Log out", use_container_width=True,
+                     key=f"sidebar_logout_{user.id}"):
+            for k in _USER_SCOPED_KEYS:
+                st.session_state.pop(k, None)
+            st.switch_page("🏠_Home.py")
+
+
 def rebuild_bst(user_id: str) -> BST:
     """Load all learned product names into a BST for autocomplete."""
     tree = BST()

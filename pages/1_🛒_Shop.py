@@ -12,7 +12,8 @@ import database as db
 from state import (
     init_state, require_login, SUPERMARKETS,
     get_bst, rebuild_bst, get_item_directory,
-    lookup_in_directory, update_directory_in_memory, load_item_directory
+    lookup_in_directory, update_directory_in_memory, load_item_directory,
+    render_sidebar,
 )
 from theme import apply_theme, budget_pill
 from algorithms.greedy import greedy_fit, knapsack_fit
