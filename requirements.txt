@@ -1,2 +1,2 @@
-streamlit>=1.32
-firebase-admin>=6.5
+/Users/jpsansal/Desktop/BUDGIT new
+pip3 freeze > requirements.txt
