@@ -1,15 +1,19 @@
-#Priority Queue
-# implementing as a binary MAX-heap stored in an array.
-# Budgit uses this to answer "what are my most expensive items?"
-# and for the budget-rescue feature: will keep removing the most
-# expensive item until the cart fits users remaining budget.
+"""
+Priority Queue — Session 13 (Trees & Priority Queues).
 
+Implemented as a binary MAX-heap stored in an array.
+Budgit uses it to answer "what are my most expensive items?" and
+to power the budget-rescue feature: peek() the top until the cart
+total fits the remaining budget.
+"""
 
 from __future__ import annotations
 from typing import Any
 
 
 class MaxHeapPQ:
+    """Max-heap priority queue keyed by numeric priority."""
+
     def __init__(self) -> None:
         # Each entry is (priority, payload). Higher priority = closer to root.
         self._heap: list[tuple[float, Any]] = []
@@ -67,6 +71,7 @@ class MaxHeapPQ:
 
 
 def top_k_expensive(items: list[dict], k: int = 3) -> list[dict]:
+    """Return the k most expensive items from a cart list (unit total)."""
     pq = MaxHeapPQ()
     for it in items:
         pq.push(it["price"] * it.get("qty", 1), it)

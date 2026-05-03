@@ -1,12 +1,16 @@
-#Binary Search Tree
-#will use to keep the list of known product names sorted
-# so we can do prefix-matching for the autocomplete as the user types in the Add Item form
+"""
+Binary Search Tree — Session 17.
 
-# Operations implemented:
-# insert(key, value)
-# search(key)
-# prefix_search(pfx)
-# in_order()
+Used by Budgit to keep the list of known product names sorted
+so we can do prefix-matching for the autocomplete as the user
+types in the Add Item form.
+
+Operations implemented:
+    insert(key, value)  -> O(log n) average, O(n) worst
+    search(key)         -> returns value or None
+    prefix_search(pfx)  -> returns every key starting with pfx (sorted)
+    in_order()          -> alphabetical traversal
+"""
 
 from __future__ import annotations
 from typing import Any, Optional
@@ -23,6 +27,7 @@ class _Node:
 
 
 class BST:
+    """Simple unbalanced BST, good enough for a few hundred product names."""
 
     def __init__(self) -> None:
         self._root: Optional[_Node] = None

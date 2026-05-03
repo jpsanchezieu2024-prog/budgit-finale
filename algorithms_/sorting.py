@@ -1,16 +1,22 @@
-#Sorting algorithms
-# we use merge_sort to sort shopping history by date descending
+"""
+Sorting algorithms — Sessions 3 (Sort) and 7 (Divide & Conquer).
+
+We expose merge_sort (stable, O(n log n)) and quick_sort.
+Budgit uses merge_sort to sort shopping history by date descending
+(we sort a list of Session dict-like objects by a key).
+"""
 
 from __future__ import annotations
 from typing import Callable, Any
 
 
-# ------------------- Merge Sort -------------------
+# ------------------- Merge Sort (Divide & Conquer) -------------------
 def merge_sort(
     arr: list,
     key: Callable[[Any], Any] = lambda x: x,
     reverse: bool = False,
 ) -> list:
+    """Stable merge sort — returns a NEW sorted list."""
     if len(arr) <= 1:
         return list(arr)
     mid = len(arr) // 2
@@ -23,6 +29,7 @@ def _merge(left, right, key, reverse):
     merged = []
     i = j = 0
     while i < len(left) and j < len(right):
+        # Compare according to direction.
         a, b = key(left[i]), key(right[j])
         take_left = (a > b) if reverse else (a <= b)
         if take_left:
@@ -36,8 +43,9 @@ def _merge(left, right, key, reverse):
     return merged
 
 
-# ------------------- Quick Sort -------------------
+# ------------------- Quick Sort (Divide & Conquer) -------------------
 def quick_sort(arr: list, key: Callable[[Any], Any] = lambda x: x) -> list:
+    """Classic Lomuto partition variant, returns NEW list."""
     arr = list(arr)
     _quick(arr, 0, len(arr) - 1, key)
     return arr

@@ -1,21 +1,29 @@
-#HashTable as the PRICE LEARNING ENGINE:
-#key-> (product_name_normalised, supermarket)
-#value-> last recorded price (float)
-#load-factor aware: rehashes to a larger table when alpha > 0.75.
+"""
+HashTable — implementation from Session 9 (Hash Tables).
 
+Used by Budgit as the PRICE LEARNING ENGINE:
+    key   -> (product_name_normalised, supermarket)
+    value -> last recorded price (float)
+
+Collision resolution: separate chaining (each bucket is a list of pairs).
+Load-factor aware: rehashes to a larger table when alpha > 0.75.
+"""
 
 from __future__ import annotations
 from typing import Any, Iterator
 
 
 class HashTable:
+    """Hash table with separate chaining + dynamic resizing."""
+
     def __init__(self, initial_capacity: int = 16) -> None:
         self._capacity = initial_capacity
         self._size = 0
         self._buckets: list[list[list]] = [[] for _ in range(self._capacity)]
 
-    # --- hashing -------------------------------------------------
+    # --- core hashing -------------------------------------------------
     def _hash(self, key: Any) -> int:
+        # Python's built-in hash is fine for this course-level implementation.
         return hash(key) % self._capacity
 
     def _load_factor(self) -> float:

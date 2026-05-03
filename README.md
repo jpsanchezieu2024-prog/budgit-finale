@@ -2,417 +2,292 @@
 
 > Smart grocery companion for university students on a budget.
 
-Budgit helps students track spending, compare supermarket prices in real
-time, and never panic at the checkout again. It's the final project for
-**Algorithms & Data Structures — PPLE & BDBA, IE University**, and every
-non-trivial operation in the app is powered by a data structure or
-algorithm we built from scratch in class.
-
-**Team:** Sofia Wiedemann · Tomás Bunge · Paolo Massihi · Juan Pablo Sánchez
+Budgit is the final project for **Algorithms & Data Structures — PPLE & BDBA, IE University**. Every non-trivial operation in the app is powered by a data structure or algorithm we implemented from scratch in class — no `dict`, `heapq`, `sorted()`, or library shortcuts.
 
 ---
 
 ## Table of contents
 
-1. [What Budgit does](#what-budgit-does)
-2. [Tech stack](#tech-stack)
-3. [Where the class algorithms actually run](#where-the-class-algorithms-actually-run)
-4. [Project structure](#project-structure)
-5. [Data model](#data-model)
-6. [Local setup](#local-setup)
-7. [Deployment to Streamlit Community Cloud](#deployment-to-streamlit-community-cloud)
-8. [How key features work under the hood](#how-key-features-work-under-the-hood)
-9. [Coverage against the assignment user stories](#coverage-against-the-assignment-user-stories)
-10. [Privacy and security notes](#privacy-and-security-notes)
-11. [Roadmap](#roadmap)
+1. [Description of the app](#1-description-of-the-app)
+2. [Features](#2-features)
+3. [Files](#3-files)
+4. [Prerequisites and environment](#4-prerequisites-and-environment)
+5. [Installation and execution](#5-installation-and-execution)
+6. [Further improvements](#6-further-improvements)
+7. [Bibliography and webgraphy](#7-bibliography-and-webgraphy)
+8. [Credits](#8-credits)
 
 ---
 
-## What Budgit does
+## 1. Description of the app
 
-Budgit is a multi-page Streamlit web app aimed at university students
-who shop on a tight weekly grocery budget. The app does five things:
+Budgit is a multi-page Streamlit web application aimed at university students who shop on a tight weekly grocery budget. The app gives a student five things they currently don't have:
 
-- **Tracks the weekly budget** with a colour-changing remaining-amount
-  card on the home dashboard, plus a daily-spend recommendation that
-  adjusts as the week progresses.
-- **Runs a live shopping session** where the user adds items by name
-  and price as they walk through the store; prices auto-fill from
-  history; the running cart total stays visible at the top.
-- **Rescues over-budget carts** using two contrasting algorithms — a
-  fast Greedy heuristic and an optimal 0/1 Knapsack DP — and shows the
-  trade-off side by side so the user (and the rubric) can see both
-  paradigms in action.
-- **Remembers prices across users** in a global Firestore directory,
-  so when one Budgit user logs that "milk costs €0.89 at Mercadona",
-  every other user typing "milk" gets that price as an autofill.
-- **Builds a savings leaderboard** ranking users by the percentage of
-  money they've saved by shopping at the cheaper supermarket relative
-  to the most expensive option on file for each item.
+- **A live cart that respects a weekly budget**, with a colour-changing remaining-amount card that shifts smoothly from green through yellow to red as the week's spending approaches the limit.
+- **Cross-user price intelligence.** When any Budgit user records the price of milk at Mercadona, every other user typing "milk" gets that price as an autofill — backed by a global Firestore directory and an in-memory hash table.
+- **An over-budget rescue mode** that shows two algorithms side by side: a fast Greedy heuristic that drops the priciest items first, and a 0/1 Knapsack DP that finds the optimal subset within the remaining budget. The user can pick either result with one click.
+- **Pre-shop store recommendation.** Build a grocery list on the List page; Budgit instantly tells you which supermarket gives the cheapest total basket using the global price directory.
+- **A savings leaderboard** ranking users by the percentage of money they've saved by shopping at the cheaper supermarket relative to the most expensive option on file for each item — extracted with a Max-Heap Priority Queue and ranked in full with Merge Sort.
 
-It also includes a grocery-list builder that pre-shopping recommends
-the cheapest supermarket for the user's full basket, a per-store
-shopping history with colour-coded supermarket badges, and a profile
-page for editing the weekly budget and preferred store.
+The interactive shopping flow is split across five pages: Home (welcome, login, dashboard), List (pre-shop list builder), Shop (live cart + Budget Rescue), History (past sessions, colour-coded per supermarket), Compare (savings leaderboard + global product prices), and Profile (edit budget and learned prices).
 
 ---
 
-## Tech stack
+## 2. Features
 
-| Layer        | Choice                                  | Why                                                                            |
-| ------------ | --------------------------------------- | ------------------------------------------------------------------------------ |
-| UI           | Streamlit (`>=1.32`)                    | Pure Python, multi-page out of the box, hosted free on Streamlit Cloud         |
-| Persistence  | Firebase Firestore                      | Free tier, schemaless, real-time-ish, syncs prices across all users            |
-| Auth         | Custom SHA-256 + per-user salt          | Demonstrates password hashing without third-party magic                        |
-| Algorithms   | Pure Python, all hand-implemented       | Mandated by the course brief — no `dict`, `heapq`, or `sorted()` shortcuts     |
-| Theming      | Custom CSS injected via `theme.py`      | Dark mint-green palette, locked to dark mode via `.streamlit/config.toml`      |
-| Hosting      | Streamlit Community Cloud               | Free, GitHub-native, redeploys on every push                                   |
+### 2.1 Account and budget management
 
-Required packages are pinned in `requirements.txt`:
+- **Sign-up and log-in** with SHA-256 password hashing and per-user random salts.
+- **Weekly budget configuration** with a default of €40 and a per-user preferred supermarket.
+- **Editable profile** — change your name, weekly budget, and preferred store at any time.
 
-```
-streamlit>=1.32
-firebase-admin>=6.5
-```
+### 2.2 Live shopping session
 
----
+- **Add items by name and price**, with quantity. Same item added twice bumps the quantity in O(1) (via the Cart's hash-table backing).
+- **Smart autofill** of prices using a two-tier lookup: your own price memory at this store first, then the global directory.
+- **Prefix-match autocomplete** on the item name field — typing "mi" surfaces "milk" instantly via a Binary Search Tree.
+- **Live running total** with a percent-of-budget indicator and progress bar.
 
-## Where the class algorithms actually run
+### 2.3 Budget Rescue (over-budget)
 
-Every data structure below was implemented from scratch under
-`algorithms/` and has at least one production code path that exercises
-it. None of them are demos — removing any one breaks the app.
+- **Greedy mode.** Drops the most expensive items first, using a Max-Heap Priority Queue. Fast (O(n log n)) but may leave money on the table.
+- **Optimal mode.** Runs 0/1 Knapsack DP in cents to find the subset of items of maximum total value that still fits the budget.
+- **Side-by-side display** of "keep" vs "put back" so the user can see the trade-off and apply the result with one click.
 
-| Class topic                  | Implementation                  | Production use                                                                                                                                        |
-| ---------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Hash Tables (Session 9)      | `algorithms/hash_table.py`      | (a) Backs `Cart._items` so re-adding the same product bumps quantity in O(1). (b) Holds the in-memory mirror of the global price directory.           |
-| Binary Search Tree (S. 17)   | `algorithms/bst.py`             | Loaded on login with every product name the user has ever bought. Powers the prefix-match autocomplete on the Add-Item form.                          |
-| Merge Sort (Sessions 3 / 7)  | `algorithms/sorting.py`         | (a) History page orders sessions by `created_at` DESC. (b) Compare page produces the full ranked savings leaderboard.                                 |
-| Quick Sort (Sessions 3 / 7)  | `algorithms/sorting.py`         | Available alongside merge sort for completeness; merge_sort is preferred where stability matters.                                                     |
-| Max-Heap Priority Queue (13) | `algorithms/priority_queue.py`  | (a) "Top-k expensive items" view. (b) Greedy budget rescue. (c) Top-K extraction on the savings leaderboard.                                          |
-| Greedy Method                | `algorithms/greedy.py`          | Budget Rescue's "drop the priciest items first" mode — fast, may not be optimal.                                                                      |
-| Dynamic Programming (0/1 KP) | `algorithms/greedy.py`          | Budget Rescue's "Optimal" mode — picks the subset of items maximising kept value within the remaining budget. O(n · W) over cents.                    |
-| Binary Search (Session 1)    | `algorithms/search.py`          | Helper for sorted-list lookups; included for completeness.                                                                                            |
-| OOP (Session 11)             | `models.py`                     | `User`, `Product`, `CartItem`, `Cart`, `Session` are all real classes with encapsulation, computed properties, and dataclasses where appropriate.     |
-| Pure compute (composition)   | `algorithms/leaderboard.py`     | Combines the Hash Table (price lookup), the Priority Queue (top-K), and Merge Sort (full ranking) to power the savings leaderboard.                   |
+### 2.4 Pre-shop grocery list
 
-The two algorithm classes the course contrasted — **Greedy vs Dynamic
-Programming** — are deliberately exposed side-by-side in the Budget
-Rescue UI so the trade-off is tangible: the Greedy answer is instant
-but potentially leaves money on the table; the DP answer is provably
-optimal but takes O(n · W) time.
+- **Build a list** of items you need to buy with quantities.
+- **Cheapest-store recommendation** — Budgit checks the global directory and tells you which supermarket gives the smallest total basket, plus per-item price breakdown.
+- **One-click import to cart** with selectable items and editable prices; imported items are removed from the list automatically.
 
----
+### 2.5 Shopping history
 
-## Project structure
+- **Past sessions sorted by date descending** using our own Merge Sort (deliberately not `ORDER BY`).
+- **Per-supermarket colour-coded badges** so multi-store shoppers can tell at a glance where each session happened.
+- **Expandable session detail** showing every line item and total.
 
-```
-Budgit/
-├── 🏠_Home.py                     # Streamlit entry — welcome / login / dashboard
-├── pages/                          # Streamlit auto-discovers these as nav pages
-│   ├── 0_📝_List.py                # Pre-shop grocery list + cheapest-store recommendation
-│   ├── 1_🛒_Shop.py                # Live shopping session + Budget Rescue
-│   ├── 2_📜_History.py             # Past sessions sorted with merge_sort, badged per store
-│   ├── 3_📊_Compare.py             # Savings leaderboard + global product-level prices
-│   └── 4_⚙️_Profile.py              # Edit budget / preferred store, view learned prices
-├── algorithms/                     # All hand-built data structures
-│   ├── __init__.py
-│   ├── hash_table.py               # Separate-chaining hash table with dynamic resizing
-│   ├── bst.py                      # Binary search tree + prefix search
-│   ├── sorting.py                  # Merge sort + quick sort
-│   ├── priority_queue.py           # Max-heap PQ + top_k_expensive helper
-│   ├── greedy.py                   # Greedy fit + 0/1 Knapsack DP
-│   ├── search.py                   # Binary + linear search
-│   └── leaderboard.py              # Savings computation + heap-based ranking
-├── models.py                       # User / Product / CartItem / Cart / Session
-├── database.py                     # Firestore wrapper + auth helpers
-├── state.py                        # Streamlit session-state plumbing
-├── theme.py                        # Dark mint-green CSS + budget colour helpers
-├── requirements.txt
-├── .streamlit/
-│   └── config.toml                 # Pins the app to dark theme
-├── .gitignore                      # Excludes firebase_key.json, __pycache__, etc.
-├── firebase_key.json               # Service-account credentials — NOT in git
-└── Launch Budgit.command           # Double-clickable macOS launcher for local dev
-```
+### 2.6 Compare and leaderboard
+
+- **Savings leaderboard.** Ranks users by lifetime % saved, with medals for the top 3 and a highlighted row for the current user. The user's exact rank is shown explicitly when they fall outside the top 10.
+- **Global product prices** side-by-side across supermarkets, with a search box and a "save up to €X" indicator per item.
+
+### 2.7 Visual polish
+
+- **Dark mint-green theme** locked via `.streamlit/config.toml` so light-mode browsers don't break contrast.
+- **Smooth budget gradient** interpolating between green, yellow, and red.
+- **Cross-user state isolation** — logging in or signing up wipes all session-state from any previous user, preventing data leaks across browser sessions.
 
 ---
 
-## Data model
+## 3. Files
 
-The app uses six Firestore collections. None of the documents reference
-each other directly — joins happen in the application layer.
+The project is organised by responsibility. Each file is documented below.
 
-| Collection         | Document shape                                                                                                                                            | Purpose                                                                                                                          |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `users`            | `{ name, email, password_hash, salt, weekly_budget, preferred_store, lifetime_saved, lifetime_could_have_spent, lifetime_sessions_counted }`              | One per user. The three `lifetime_*` counters are denormalised aggregates that power the savings leaderboard without extra reads. |
-| `products`         | `{ user_id, name, price, supermarket, updated_at }` keyed by `<user_id>_<name>_<store>`                                                                   | Per-user price memory: the last price *this* user paid for *this* item at *this* store. Drives the personal autofill.            |
-| `item_directory`   | `{ name, prices: { Mercadona: 0.89, Lidl: 0.75, … }, last_updated, times_added }` keyed by normalised item name                                            | Global price directory shared by all users. The "milk costs X at Y" knowledge graph.                                              |
-| `sessions`         | `{ user_id, supermarket, total, created_at }`                                                                                                             | One completed shopping trip per document.                                                                                         |
-| `session_items`    | `{ session_id, name, price, qty }`                                                                                                                        | The line items of each session.                                                                                                  |
-| `grocery_lists`    | `{ user_id, items: [{name, qty}], updated_at }` keyed by `user_id`                                                                                        | One pre-shop list per user. Imported into the cart and decremented as items are imported.                                         |
+### 3.1 Entry point and launcher
 
-The legacy `budgit.db` SQLite file is no longer used and is included
-in `.gitignore`. Earlier prototypes used SQLite; the move to Firestore
-made price-sharing across users trivial.
+| File | Purpose |
+| ---- | ------- |
+| **`Launch Budgit.command`** | Double-click on macOS to install dependencies, verify the Firebase key, and launch the app in your browser. |
+| **`🏠_Home.py`** | Streamlit entry point. Renders the welcome / log-in / sign-up tabs and the post-login dashboard with the budget card and weekly metrics. |
 
----
+### 3.2 UI pages
 
-## Local setup
+Streamlit auto-discovers files in the `pages/` directory and turns each into a sidebar nav item.
 
-### 1. Prerequisites
+| File | Purpose |
+| ---- | ------- |
+| **`pages/0_📝_List.py`** | Pre-shop grocery list builder; recommends the cheapest supermarket for the full basket. |
+| **`pages/1_🛒_Shop.py`** | Live shopping session. Add items, edit quantities and prices, see the running total, trigger Budget Rescue when over budget, and end a session. |
+| **`pages/2_📜_History.py`** | Past sessions sorted with our Merge Sort. Each session is colour-coded by supermarket. |
+| **`pages/3_📊_Compare.py`** | Savings leaderboard plus per-item price comparison across stores from the global directory. |
+| **`pages/4_⚙️_Profile.py`** | Edit name, weekly budget, preferred supermarket; view the user's learned prices. |
 
-- Python 3.10 or newer
-- A Firebase project with Firestore enabled (free tier is fine)
-- A Firebase service-account key JSON file
+### 3.3 Core domain and data layer
 
-### 2. Clone and install
+| File | Purpose |
+| ---- | ------- |
+| **`models.py`** | OOP domain model. `User`, `Product`, `CartItem`, `Cart`, `Session` — all built as proper Python classes with `@dataclass`, encapsulated state, and computed properties. The `Cart` is backed by our hash table. |
+| **`database.py`** | Firebase Firestore wrapper. Reads credentials from Streamlit secrets, an environment variable, or a local file. Defines all CRUD functions on the `users`, `products`, `sessions`, `session_items`, `item_directory`, and `grocery_lists` collections, plus the leaderboard counters. |
+| **`state.py`** | Streamlit session-state plumbing. Initialises the cart, the in-memory hash table mirroring the global directory, and the BST of learned product names. |
+| **`theme.py`** | Dark mint-green CSS injection plus the `budget_color()` helper that interpolates green→yellow→red as the budget is consumed. |
+| **`requirements.txt`** | Pinned Python dependencies: `streamlit>=1.32`, `firebase-admin>=6.5`. |
 
-```bash
-git clone https://github.com/<your-username>/budgit-final.git
-cd budgit-final
-pip install -r requirements.txt
-```
+### 3.4 Algorithms
 
-### 3. Add your Firebase credentials
+Every data structure below is implemented from scratch using concepts covered in class. Each module has at least one production code path that exercises it; remove any one and the app breaks.
 
-Create a Firebase project at <https://console.firebase.google.com>,
-enable Firestore, and download a service-account key from
-**Project settings → Service accounts → Generate new private key**.
-Save the JSON as `firebase_key.json` in the project root.
+| File | Algorithm | Class session | Production use |
+| ---- | --------- | ------------- | -------------- |
+| **`algorithms/__init__.py`** | (package marker) | — | Marks `algorithms` as an importable Python package. |
+| **`algorithms/hash_table.py`** | Hash Table with separate chaining + dynamic resizing | Session 9 | Backs `Cart._items` (O(1) item lookup); mirrors the global product directory in memory. |
+| **`algorithms/bst.py`** | Binary Search Tree with prefix search | Session 17 | Powers the autocomplete on the Add-Item form. |
+| **`algorithms/sorting.py`** | Merge Sort and Quick Sort | Sessions 3 / 7 | Sorts shopping history by date, ranks the leaderboard. |
+| **`algorithms/priority_queue.py`** | Max-Heap Priority Queue | Session 13 | Top-k expensive items, Greedy budget rescue, top-K leaderboard extraction. |
+| **`algorithms/greedy.py`** | Greedy Method + 0/1 Knapsack DP | Greedy / DP lectures | The two contrasting Budget Rescue modes. |
+| **`algorithms/search.py`** | Binary Search and Linear Search | Session 1 | Helper utilities for sorted-list lookups. |
+| **`algorithms/leaderboard.py`** | Composition of HashTable + PQ + Merge Sort | — | Computes per-session savings against the global directory and ranks all users. |
 
-> ⚠️ **`firebase_key.json` is in `.gitignore` and must never be
-> committed.** Anyone with this file has full read/write access to
-> your Firestore database. If it ever leaks, immediately rotate the
-> key in the Firebase console and revoke the old one.
+### 3.5 Configuration and secrets
 
-### 4. Run
-
-```bash
-streamlit run 🏠_Home.py
-```
-
-Streamlit prints a local URL (typically <http://localhost:8501>).
-Open it, sign up, enter a weekly budget and a preferred supermarket,
-and start shopping.
-
-macOS users can also double-click **Launch Budgit.command** to
-auto-install Streamlit on first run and start the app in one step.
+| File | Purpose |
+| ---- | ------- |
+| **`.streamlit/config.toml`** | Streamlit configuration — pins the app to dark theme so light-mode browsers don't break the UI. |
+| **`.gitignore`** | Excludes `firebase_key.json`, `__pycache__/`, `budgit.db` (legacy SQLite, no longer used), `.DS_Store`, and IDE folders. |
+| **`firebase_key.json`** | Firebase service-account credentials. **NOT in the public repo** — must be present locally for the app to connect to Firestore. |
+| **`README.md`** | This document. |
 
 ---
 
-## Deployment to Streamlit Community Cloud
+## 4. Prerequisites and environment
 
-The hosted version uses Streamlit's free cloud, which redeploys on
-every push to `main`.
+### 4.1 Operating system
 
-1. Push the project to a GitHub repo. **Make sure
-   `firebase_key.json` is excluded** — the included `.gitignore`
-   handles this.
-2. Go to <https://share.streamlit.io>, sign in with GitHub, and
-   click **Create app → Deploy a public app from GitHub**.
-3. Fill in:
-   - Repository: `<your-username>/budgit-final`
-   - Branch: `main`
-   - Main file path: `🏠_Home.py`
-   - App URL: pick any subdomain
-4. Click **Advanced settings** and paste your service-account
-   credentials in the **Secrets** box, formatted as TOML under a
-   `[firebase]` table:
+Developed and tested on **macOS Sonoma (14.x) and Sequoia (15.x)** with Apple Silicon. The launcher script (`Launch Budgit.command`) is macOS-specific. Linux users can run `streamlit run "🏠_Home.py"` from a terminal directly. Windows users can use a `python -m streamlit run "🏠_Home.py"` command from PowerShell after installing the dependencies.
 
-```toml
-[firebase]
-type                        = "service_account"
-project_id                  = "your-project-id"
-private_key_id              = "..."
-private_key                 = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
-client_email                = "firebase-adminsdk-xxxxx@your-project-id.iam.gserviceaccount.com"
-client_id                   = "..."
-auth_uri                    = "https://accounts.google.com/o/oauth2/auth"
-token_uri                   = "https://oauth2.googleapis.com/token"
-auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
-client_x509_cert_url        = "..."
-universe_domain             = "googleapis.com"
-```
+### 4.2 Python
 
-The `private_key` field is the awkward one: copy the value out of
-your JSON file *as-is*, keeping the literal `\n` escape sequences,
-and surround it with double quotes in TOML.
+- **Python 3.10 or newer** (tested on 3.10, 3.11, 3.12, 3.13).
+- Comes pre-installed on most macOS systems via Xcode Command Line Tools, otherwise download from <https://www.python.org/downloads/>.
 
-5. Click **Deploy**. First build takes 1-2 minutes while
-   `firebase-admin` installs.
+### 4.3 Python libraries
 
-`database.py` automatically prefers `st.secrets["firebase"]` in
-hosted mode and falls back to the local `firebase_key.json` for
-development, so the same code runs in both environments.
+Pinned in `requirements.txt` and installed automatically by the launcher on first run:
+
+| Library | Minimum version | Purpose |
+| ------- | --------------- | ------- |
+| **`streamlit`** | 1.32 | Multi-page web framework that powers the UI, sessions, navigation, and theming. |
+| **`firebase-admin`** | 6.5 | Firebase Admin SDK; talks to Firestore for persistence and to Google's auth servers for service-account authentication. |
+
+The Firebase Admin SDK transitively pulls in `google-cloud-firestore`, `google-auth`, `grpcio`, and a few other Google libraries. They are installed automatically.
+
+### 4.4 External services
+
+- **Firebase project with Firestore enabled** (free tier is plenty). The project's service-account JSON must be placed in the project root as `firebase_key.json` — it will not be in the ZIP for security reasons and is provided separately.
 
 ---
 
-## How key features work under the hood
+## 5. Installation and execution
 
-### Price learning across users
+The launcher does everything for you. No commands need to be typed in a terminal.
 
-Every time anyone adds an item with a price, three writes happen
-in lock-step:
+### 5.1 What you need beforehand
 
-1. `products/{user_id}_{name}_{store}` — the user's personal memory.
-2. `item_directory/{name}` — the global directory's `prices` map for
-   that store gets updated, plus a `times_added` counter.
-3. `state.update_directory_in_memory()` — the in-memory `HashTable`
-   mirror is patched immediately so subsequent autofill on the same
-   page render is O(1) without re-reading Firestore.
+- A Mac running macOS 14 (Sonoma) or newer with Python 3.10+ installed.
+- An internet connection (only required on the very first launch, to download `streamlit` and `firebase-admin`).
+- The `firebase_key.json` file (provided separately to your professor — see the submission cover page).
 
-When the user types in the Add-Item form, autofill priority is:
-personal memory → global directory → blank.
+### 5.2 Step-by-step
 
-### Budget Rescue (Greedy vs DP)
+#### Step 1 — Download the project
 
-When `cart.total() > user.weekly_budget`, the Shop page exposes two
-algorithms via a radio toggle:
+Click **Code → Download ZIP** on the project's GitHub page (or use the ZIP attached to the submission). Save it somewhere convenient like the Desktop.
 
-- **Greedy** (`greedy_fit` in `algorithms/greedy.py`) repeatedly pops
-  the most expensive item off a max-heap until the cart fits. O(n log n).
-- **0/1 Knapsack DP** (`knapsack_fit` in the same module) treats item
-  prices as both weight and value, runs in cents to keep weights
-  integer, and back-tracks through the DP table to recover the optimal
-  kept subset. O(n · W).
+#### Step 2 — Unzip
 
-The UI shows "Keep" and "Put back" columns side by side so the user
-can apply the result with one click. Both algorithms write to the
-same data structure, so toggling between them is instantaneous.
+Double-click the downloaded `.zip` file. Finder will create a folder called `Budgit` (or `Budgit-main`) next to the ZIP.
 
-### Savings leaderboard
+#### Step 3 — Drop the Firebase key into the folder
 
-The leaderboard ranks users by *percentage of money saved by shopping
-at the cheaper supermarket*, computed lifetime across every session
-they've completed.
+Move the `firebase_key.json` file (provided separately) into the unzipped `Budgit` folder, alongside `🏠_Home.py` and `Launch Budgit.command`. The folder should now contain that file at the root level.
 
-For each session item:
+#### Step 4 — Launch the app
 
-```
-ceiling   = max(prices[item] across all stores in the directory)
-ceiling   = max(ceiling, price_paid)        # never go negative
-saved    += (ceiling - price_paid) * qty
-could_have += ceiling * qty
-```
+Double-click **`Launch Budgit.command`**.
 
-Items only ever seen at one store are excluded — there's nothing to
-compare against, so they would distort the percentage.
+A Terminal window opens and shows messages like *"Starting Budgit"*. On the very first launch only, it spends ~30 seconds installing `streamlit` and `firebase-admin`. On every subsequent launch it skips straight to opening the app, which usually takes ~3 seconds.
 
-The numbers are stored as three denormalised counters on each user
-document (`lifetime_saved`, `lifetime_could_have_spent`,
-`lifetime_sessions_counted`) so the leaderboard reads N user docs
-once instead of recomputing across every session on every view.
-Counters increment atomically on `save_session()` via Firestore's
-`Increment(...)`, and a one-shot lazy `backfill_user_savings()` runs
-the first time a user is encountered without the counters set, so
-existing accounts get migrated transparently.
+#### Step 5 — Use the app
 
-The ranking itself uses both class algorithms:
+Your default browser opens automatically at **<http://localhost:8501>** showing the Budgit welcome screen. Click **Sign up**, enter a name, email, password, weekly budget and preferred supermarket, then **Create account**. You're in.
 
-- **Top-K extraction** with `MaxHeapPQ` — semantically the right
-  choice when N >> K. O(N log K).
-- **Full ranking** with `merge_sort` for finding the current user's
-  rank when they fall outside the top 10.
+#### Step 6 — Stop the app when you're done
 
-A user needs at least three counted sessions to qualify, so a single
-lucky shop can't dominate.
+Close the Terminal window that the launcher opened, or focus it and press `Ctrl + C`. The browser tab can be closed at any time.
 
-### Smart store recommendation (List page)
+### 5.3 First-time-only macOS Gatekeeper warning
 
-The grocery list page asks one question: "where should I buy this
-basket?" For each item, it does an O(1) lookup in the in-memory
-directory `HashTable` for the prices map, then sums per-store totals
-and ranks ascending. The cheapest store wins; coverage (how many
-items have a price at that store) is shown as a confidence indicator.
+The first time you double-click `Launch Budgit.command`, macOS may show a warning saying the file is from an unidentified developer. To allow it:
 
-### Smooth budget colour gradient
+1. Right-click (or `Ctrl`-click) the `Launch Budgit.command` file.
+2. Choose **Open** from the menu.
+3. In the dialog that appears, click **Open** again.
 
-`theme.budget_color(pct_used)` interpolates linearly between three
-RGB anchor points — mint green at 0% spent, warm yellow at 50%, soft
-red at 100%+ — so the dashboard's "remaining" amount fades through
-every shade in between as the week progresses. Beyond 100% the
-colour clamps at red.
+You only need to do this once — subsequent double-clicks work normally.
 
-### Per-supermarket badges in History
+### 5.4 Troubleshooting
 
-Each supermarket has a deterministic emoji + accent colour
-(Mercadona green, Lidl yellow, Carrefour blue, etc.) defined in
-`pages/2_📜_History.py`. The History page renders a chip row at the
-top showing every store the user has shopped at; each session card
-gets a coloured left-border so the visual rhythm of multi-store
-shoppers is unmistakable.
-
-### Cross-user state isolation
-
-When a user logs in or signs up, `_switch_user()` in `🏠_Home.py`
-explicitly wipes every key in Streamlit's session state that holds
-data tied to the previous account — cart, BST, item directory,
-shop store, grocery list, autocomplete typing buffer. Without this,
-two users sharing the same browser tab can leak each other's data.
+| Symptom | Cause | Fix |
+| ------- | ----- | --- |
+| Terminal shows "Python isn't installed" | macOS without Xcode CLT | Install Python from <https://www.python.org/downloads/>, then re-launch. |
+| Terminal shows "firebase_key.json is missing" | Step 3 was skipped | Place `firebase_key.json` in the same folder as `Launch Budgit.command` and re-launch. |
+| Browser opens but page won't load | Streamlit hasn't finished booting | Wait 5 more seconds and refresh `http://localhost:8501`. |
+| App starts but sign-up hangs | First-time Firestore connection (cold start) | Wait up to 10 seconds — subsequent operations are fast. |
 
 ---
 
-## Coverage against the assignment user stories
+## 6. Further improvements
 
-| Story                                            | Where it lives                       | Status |
-| ------------------------------------------------ | ------------------------------------ | ------ |
-| 1. Registration & weekly budget setup            | `🏠_Home.py` + Profile page          | ✅     |
-| 2. Add item + price learning                     | Shop page                            | ✅     |
-| 3. Live cart, edit, remove, end session          | Shop page                            | ✅     |
-| 4. Shopping history + supermarket comparison     | History + Compare pages              | ✅     |
+If this were a v2, the priorities would be:
 
-**Bonus features** that go beyond the brief:
-
-- **Budget Rescue** (Greedy vs DP) for the over-budget case.
-- **Pre-shop grocery list** with cheapest-store recommendation.
-- **Cross-user price directory** so the autofill works for new users
-  on day one.
-- **Savings leaderboard** with multi-algorithm ranking.
-- **Smooth colour-coded budget gradient** on the dashboard.
+- **Friends and household mode.** Shared grocery lists and shared budgets for roommates, with a friend graph powered by BFS over a Firestore `friendships` collection — exercising another graph algorithm we touched on in class.
+- **Streaks and achievements.** Gamify weekly under-budget performance with badges, weekly challenges, and a "lifetime saved" counter on the dashboard. Strong retention driver.
+- **Migration to Firebase Authentication.** Replace the homemade SHA-256 password hashing with managed auth — gives password reset, email verification, and OAuth providers (Google, Apple) for free.
+- **Memoised DP for daily budget caps.** Given remaining budget and remaining days in the week, suggest an optimal per-day spending cap that minimises overshoot probability.
+- **Receipt OCR.** Scan a paper receipt with the phone camera and extract items + prices into a session automatically. Uses Apple Vision or Tesseract.
+- **Bilingual UI (EN / ES).** The user base is mostly Spain-based students, so translating the chrome would land well.
+- **A live demo URL.** The Streamlit Community Cloud deployment is straightforward but requires the Firebase secret to be configured server-side; we kept the project local-only for the academic submission so no credentials need to leak.
 
 ---
 
-## Privacy and security notes
+## 7. Bibliography and webgraphy
 
-- **Passwords** are hashed with SHA-256 and a random per-user salt.
-  This is fine for a class project but is **not** what we'd ship to
-  real users — production would use Firebase Authentication for
-  password handling, email verification, and reset flows out of the
-  box.
-- **The Firebase service-account key** lives only on developer
-  machines (`firebase_key.json`, gitignored) and in Streamlit Cloud's
-  Secrets store (`[firebase]` table). It is never in source control.
-- **Names on the leaderboard** are rendered as "First L." (first name
-  + last initial) by `algorithms.leaderboard.display_name` so users
-  can recognise themselves without exposing identities to strangers.
-- **No third-party data** is collected, sold, or shared. The app
-  speaks only to your own Firestore.
+### 7.1 Course materials
 
----
+- **Algorithms & Data Structures**, PPLE & BDBA, IE University. Sessions 1, 3, 7, 9, 11, 13, 17 are referenced in the source code where each algorithm appears.
 
-## Roadmap
+### 7.2 Books
 
-Things we'd build if this were a v2:
+- Cormen, T. H., Leiserson, C. E., Rivest, R. L., & Stein, C. (2022). *Introduction to Algorithms* (4th ed.). MIT Press. — Reference for Merge Sort, Quick Sort, BST, Binary Heap, Greedy Method, and 0/1 Knapsack Dynamic Programming.
+- Sedgewick, R., & Wayne, K. (2011). *Algorithms* (4th ed.). Addison-Wesley. — Reference for hash tables with separate chaining and priority queue implementation idioms.
 
-- **Friends and household mode** — shared grocery lists and budgets
-  for roommates, with a friend graph that would let us reuse BFS
-  from a future class session.
-- **Streaks and achievements** — gamify weekly under-budget
-  performance with badges, weekly challenges, and a "lifetime saved"
-  counter on the dashboard.
-- **Move auth to Firebase Authentication** — password reset, email
-  verification, optional 2FA, OAuth providers.
-- **Memoised DP for daily budget caps** — given remaining budget and
-  remaining days in the week, suggest an optimal per-day spending
-  cap that minimises overshoot probability.
-- **Bilingual UI (EN / ES)** — the user base is mostly Spain-based
-  students, so translating the chrome would be a quick win.
-- **Receipt OCR** — scan a receipt with the phone camera and let the
-  app extract items and prices into a session automatically.
+### 7.3 Software documentation
+
+- Streamlit official documentation. <https://docs.streamlit.io>
+- Firebase Admin Python SDK documentation. <https://firebase.google.com/docs/admin/setup>
+- Cloud Firestore Python client reference. <https://googleapis.dev/python/firestore/latest/index.html>
+- Python 3 standard library reference. <https://docs.python.org/3/library/>
+
+### 7.4 Articles and blog posts consulted
+
+- "How to deploy Streamlit apps with Firebase backends." Streamlit Community Forum. <https://discuss.streamlit.io>
+- "Service account authentication best practices." Google Cloud documentation. <https://cloud.google.com/iam/docs/best-practices-service-accounts>
+
+### 7.5 Course-level inspiration
+
+The Greedy-vs-DP juxtaposition in the Budget Rescue feature is directly inspired by the comparative discussion of greedy algorithms and dynamic programming in the course's lecture series. The Hash Table and BST implementations follow the structures presented in class with no external modifications.
 
 ---
 
-Built with care for the Algorithms & Data Structures course at IE
-University. Pull requests, bug reports, and theme remixes are all
-welcome.
+## 8. Credits
+
+### 8.1 Project team
+
+- **Sofia Wiedemann**
+- **Tomás Bunge**
+- **Paolo Massihi**
+- **Juan Pablo Sánchez**
+
+### 8.2 Course
+
+- **Algorithms & Data Structures**
+- Programmes: PPLE (Politics, Philosophy, Law and Economics) & BDBA (Bachelor in Data and Business Analytics)
+- Institution: **IE University**, Madrid / Segovia
+- Academic year: 2025–2026
+
+### 8.3 Acknowledgements
+
+Thanks to the course teaching team for the structured progression from basic search algorithms to dynamic programming over the semester — the depth made it possible to ship a project where every algorithm has a real production purpose, not just a tutorial-style demo.
+
+---
+
+*Built with care for the Algorithms & Data Structures course at IE University.*

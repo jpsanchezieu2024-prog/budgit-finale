@@ -1,12 +1,15 @@
-#Search algorithms
-#we used for quick lookups over the sorted list of known product names.
+"""
+Search algorithms — Session 1 (Search).
+
+Used for quick lookups over the sorted list of known product names.
+"""
 
 from __future__ import annotations
 from typing import Sequence, Any
 
 
 def binary_search(arr: Sequence, target: Any) -> int:
-    #will return the index of target in sorted arr or -1 if absent
+    """Return the index of target in sorted arr, or -1 if absent."""
     lo, hi = 0, len(arr) - 1
     while lo <= hi:
         mid = (lo + hi) // 2
