@@ -1,2 +1,2 @@
-/Users/jpsansal/Desktop/BUDGIT new
-pip3 freeze > requirements.txt
+streamlit
+firebase-admin
