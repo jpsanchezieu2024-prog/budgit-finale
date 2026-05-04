@@ -11,7 +11,7 @@ import streamlit as st
 from datetime import datetime
 
 import database as db
-from state import init_state, require_login
+from state import init_state, require_login, render_sidebar
 from theme import apply_theme
 from algorithms.sorting import merge_sort
 
@@ -20,6 +20,7 @@ st.set_page_config(page_title="Budgit — History", page_icon="📜", layout="ce
 apply_theme()
 init_state()
 user = require_login()
+render_sidebar(user)
 
 
 # Per-supermarket visual identity. Each store gets a distinct emoji

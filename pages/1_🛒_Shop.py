@@ -23,11 +23,33 @@ st.set_page_config(page_title="Budgit — Shop", page_icon="🛒", layout="cente
 apply_theme()
 init_state()
 user = require_login()
+render_sidebar(user)
 
 if st.session_state.shop_store is None:
     st.session_state.shop_store = user.preferred_store or SUPERMARKETS[0]
 
+# -------------------------------------------------------
+# One-shot success banner after a session is saved.
+# Set by the confirmation dialog further down.
+# -------------------------------------------------------
+if "session_just_saved" in st.session_state:
+    saved_total, saved_store = st.session_state.session_just_saved
+    st.success(f"✅ Session saved! Spent **€{saved_total:.2f}** at **{saved_store}** 🎉")
+    st.balloons()
+    del st.session_state.session_just_saved
+
+# -------------------------------------------------------
+# First-time-user welcome banner. Shown once after sign-up.
+# -------------------------------------------------------
+if st.session_state.pop("first_time_user", False):
+    st.info(
+        f"👋 **Welcome to Budgit, {user.name.split()[0]}!** Your weekly budget is "
+        f"**€{user.weekly_budget:.2f}**. Add items to your cart below as you "
+        "shop — Budgit will track the running total and warn you if you go over."
+    )
+
 st.markdown("### 🛒 Shopping session")
+st.caption("Add items as you shop. Prices auto-fill from your history and the global directory.")
 
 store = st.selectbox(
     "Shopping at",
@@ -294,7 +316,17 @@ if grocery_items:
 st.markdown(f"#### Cart ({cart.count()} items)")
 
 if len(cart) == 0:
-    st.info("Your cart is empty. Add your first item above! 👆")
+    st.markdown(
+        "<div class='budgit-card' style='text-align:center; padding:1.6rem;'>"
+        "<div style='font-size:2.5rem; margin-bottom:0.4rem;'>🛒</div>"
+        "<div style='font-weight:700; margin-bottom:0.3rem;'>Your cart is empty</div>"
+        "<div style='color:#7FB5A0; font-size:0.9rem;'>"
+        "Use the <b>Add an item</b> form above to start shopping. "
+        "Or import a saved grocery list with the panel below."
+        "</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
 else:
     for item in list(cart):
         c1, c2, c3, c4, c5 = st.columns([3, 1.2, 1, 1.2, 0.8])
@@ -385,25 +417,70 @@ if total > user.weekly_budget and user.weekly_budget > 0:
 
 
 # -------------------------------------------------------
-# End session
+# End session — with a confirmation modal so a misclick can't
+# accidentally close the cart and wipe it.
 # -------------------------------------------------------
+@st.dialog("Confirm end of session")
+def _confirm_end_session():
+    """
+    Two-step save: the user has to explicitly approve clearing the cart
+    and saving the session to history. Triggered by the "End & Save"
+    button below.
+    """
+    items = list(cart)
+    st.markdown(f"### Save this shopping session?")
+    st.write("")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Store", store)
+    c2.metric("Items", cart.count())
+    c3.metric("Total", f"€{cart.total():.2f}")
+
+    with st.expander(f"View the {len(items)} item{'s' if len(items) != 1 else ''} in this session"):
+        for it in items:
+            st.markdown(
+                f"<div class='budgit-item'>"
+                f"<span><b>{it.name.title()}</b> "
+                f"<span style='color:#7FB5A0; font-size:0.82rem;'>× {it.qty}</span></span>"
+                f"<span>€{it.line_total:.2f}</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+    st.caption(
+        "Once saved, this session goes into your shopping history and "
+        "your cart is emptied so you can start a new shop."
+    )
+
+    btn_save, btn_cancel = st.columns(2)
+    if btn_save.button("✅ Save & end session", type="primary",
+                       use_container_width=True, key="dlg_confirm_save"):
+        # Capture totals BEFORE clearing the cart so we can show them
+        # in the post-save success banner.
+        final_total = cart.total()
+        final_store = store
+
+        db.save_session(
+            user.id, store,
+            cart.to_session_dicts(), cart.total(),
+            directory=get_item_directory(),
+        )
+        cart.clear()
+        st.session_state.session_just_saved = (final_total, final_store)
+        st.rerun()
+
+    if btn_cancel.button("❌ Cancel", use_container_width=True,
+                         key="dlg_confirm_cancel"):
+        st.rerun()
+
+
 st.divider()
 col1, col2 = st.columns(2)
 with col1:
-    if st.button("🧹 Clear cart", use_container_width=True):
+    if st.button("🧹 Clear cart", use_container_width=True,
+                 disabled=len(cart) == 0):
         cart.clear()
         st.rerun()
 with col2:
     if st.button("💾 End & Save Session", type="primary",
                  use_container_width=True, disabled=len(cart) == 0):
-        # Pass the in-memory directory so save_session can update the
-        # lifetime savings counters that power the leaderboard.
-        sid = db.save_session(
-            user.id, store,
-            cart.to_session_dicts(), cart.total(),
-            directory=get_item_directory(),
-        )
-        st.success(f"Session saved! Spent **€{cart.total():.2f}** at {store} 🎉")
-        cart.clear()
-        st.balloons()
-        st.rerun()
+        _confirm_end_session()

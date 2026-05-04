@@ -9,7 +9,7 @@ which supermarket is cheapest for your whole basket.
 import streamlit as st
 
 import database as db
-from state import init_state, require_login, SUPERMARKETS, get_item_directory
+from state import init_state, require_login, SUPERMARKETS, get_item_directory, render_sidebar
 from theme import apply_theme, PRIMARY
 
 
@@ -17,6 +17,7 @@ st.set_page_config(page_title="Budgit — Grocery List", page_icon="📝", layou
 apply_theme()
 init_state()
 user = require_login()
+render_sidebar(user)
 
 st.markdown("### 📝 Grocery List")
 st.caption("Build your list and we'll tell you where to shop.")
