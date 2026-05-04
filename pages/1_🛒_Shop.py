@@ -18,6 +18,9 @@ from state import (
 )
 from theme import apply_theme, budget_pill
 from algorithms.greedy import greedy_fit, knapsack_fit
+from algorithms.units import (
+    UNIT_OPTIONS, format_size, format_price_per_unit, price_per_base_unit,
+)
 
 
 st.set_page_config(page_title="Budgit — Shop", page_icon="🛒", layout="centered")
@@ -39,6 +42,21 @@ if "session_just_saved" in st.session_state:
     st.success(f"✅ Session saved! Spent **€{saved_total:.2f}** at **{saved_store}** 🎉")
     st.balloons()
     del st.session_state.session_just_saved
+
+# -------------------------------------------------------
+# One-shot toast celebrations for newly-earned badges. The
+# confirmation dialog populates `pending_badges` after a save;
+# we surface them on the next render and clear the queue.
+# -------------------------------------------------------
+if st.session_state.get("pending_badges"):
+    for badge_id in st.session_state.pending_badges:
+        meta = db.BADGES.get(badge_id)
+        if meta:
+            st.toast(
+                f"{meta['emoji']} New badge — {meta['name']}!",
+                icon="🎉",
+            )
+    del st.session_state["pending_badges"]
 
 # -------------------------------------------------------
 # First-time-user welcome banner. Shown once after sign-up.
@@ -184,7 +202,10 @@ with st.form("add_item", clear_on_submit=True):
         )
 
     with col_price:
-        # Autofill: check user's own memory first, then global directory
+        # Autofill: check user's own memory first, then global
+        # directory. Always clamped to >= 0 so the number_input's
+        # min_value constraint can't be violated by stale or weird
+        # data in the database.
         autofill = 0.0
         if name_in:
             user_price = db.lookup_product_price(user.id, name_in, store)
@@ -194,10 +215,12 @@ with st.form("add_item", clear_on_submit=True):
                 global_price = lookup_in_directory(name_in, store)
                 if global_price is not None:
                     autofill = float(global_price)
+        autofill = max(0.0, autofill)
 
         price_in = st.number_input(
             "Price (€)", min_value=0.0, step=0.1,
-            value=autofill, format="%.2f"
+            value=autofill, format="%.2f",
+            key="add_item_price",
         )
 
     with col_qty:
@@ -206,30 +229,54 @@ with st.form("add_item", clear_on_submit=True):
     submitted = st.form_submit_button("➕ Add to Cart", type="primary")
 
     if submitted:
-        if not name_in.strip() or price_in <= 0:
-            st.error("Please enter a product name and a positive price.")
+        # Validate name and price separately so the user gets a
+        # specific message about what's wrong rather than the old
+        # combined "name OR price" error which read as "negative"
+        # when it was really just a 0.0-default price field.
+        clean_name = name_in.strip() if name_in else ""
+        try:
+            clean_price = float(price_in or 0.0)
+        except (TypeError, ValueError):
+            clean_price = 0.0
+
+        if not clean_name:
+            st.error("Please enter a product name.")
+        elif clean_price <= 0:
+            st.error("Please enter a price greater than €0.00.")
         else:
-            key = name_in.lower().strip()
+            key = clean_name.lower()
 
             # Check if item already in cart
             existing = cart._items.get(key)
             if existing is not None:
                 # UPDATE the existing cart row — don't add a duplicate
-                # Add the new qty, update to the latest price
-                cart.update(name_in, price=float(price_in), qty=existing.qty + int(qty_in))
-                st.toast(f"Updated {name_in.title()} — now {existing.qty + int(qty_in)}× at €{price_in:.2f}", icon="✏️")
+                cart.update(clean_name, price=clean_price,
+                            qty=existing.qty + int(qty_in))
+                st.toast(
+                    f"Updated {clean_name.title()} — now "
+                    f"{existing.qty + int(qty_in)}× at €{clean_price:.2f}",
+                    icon="✏️",
+                )
             else:
-                cart.add(name_in, float(price_in), int(qty_in))
-                st.toast(f"Added {name_in.title()} — €{price_in:.2f}", icon="🛍️")
+                cart.add(clean_name, clean_price, int(qty_in))
+                st.toast(
+                    f"Added {clean_name.title()} — €{clean_price:.2f}",
+                    icon="🛍️",
+                )
 
             # Save to user's price memory and global directory
-            db.upsert_product(user.id, name_in, float(price_in), store)
-            db.add_to_directory(name_in, float(price_in), store)
-            update_directory_in_memory(name_in, float(price_in), store)
+            db.upsert_product(user.id, clean_name, clean_price, store)
+            db.add_to_directory(clean_name, clean_price, store)
+            update_directory_in_memory(clean_name, clean_price, store)
             rebuild_bst(user.id)
 
-            st.session_state.last_typed_name = name_in
-            st.rerun()
+            st.session_state.last_typed_name = clean_name
+            # NOTE: no explicit st.rerun() here. Streamlit reruns the
+            # script automatically after a form submit, and an explicit
+            # rerun() inside the handler interferes with the form's
+            # `clear_on_submit=True` reset, leaving the price field in
+            # a stale state that surfaces as a "value < min_value"
+            # warning on the next interaction.
 
 # -------------------------------------------------------
 # Live autocomplete + cross-store price comparison.

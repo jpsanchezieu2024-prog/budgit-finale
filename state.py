@@ -104,16 +104,55 @@ def render_sidebar(user) -> None:
             st.switch_page("🏠_Home.py")
 
 
+def compute_streak(user_id: str, weekly_budget: float) -> int:
+    """
+    Return the user's consecutive-weeks-under-budget streak.
+
+    Walks past completed calendar weeks (Monday → Sunday) backwards
+    from last week. A week counts toward the streak if (a) it had
+    at least one saved session and (b) the sum of session totals in
+    that week was at most `weekly_budget`. The current (in-progress)
+    week is intentionally excluded — the streak only credits weeks
+    that have actually finished.
+    """
+    if weekly_budget <= 0:
+        return 0
+
+    sessions = db.get_sessions(user_id)
+    if not sessions:
+        return 0
+
+    # Aggregate session totals by Monday-of-that-week.
+    week_totals: dict = {}
+    for s in sessions:
+        try:
+            created = datetime.fromisoformat(s["created_at"])
+        except (TypeError, ValueError):
+            continue
+        monday = (created - timedelta(days=created.weekday())).date()
+        week_totals[monday] = week_totals.get(monday, 0.0) + float(s["total"])
+
+    # Walk back from the *previous* Monday.
+    today = datetime.utcnow()
+    current_monday = (today - timedelta(days=today.weekday())).date()
+    week = current_monday - timedelta(days=7)
+
+    streak = 0
+    while week in week_totals and week_totals[week] <= weekly_budget:
+        streak += 1
+        week = week - timedelta(days=7)
+    return streak
+
+
 def render_budget_meter(user) -> None:
     """
     Thin always-visible budget bar shown at the top of every
     authenticated page (except Home, which has its own big card).
 
-    The bar shows "remaining this calendar week" budget with a colour
-    that fades from green through yellow to red as the budget is
-    consumed, plus the number of days left in the week. Anywhere in
-    the app, the user can glance up and instantly answer "how much do
-    I have left?" — that's the single biggest UX win in v1.
+    Shows three things: remaining budget for the current calendar
+    week (green→yellow→red gradient), days left in the week, and a
+    streak chip (🔥 N) when the user has at least one full week of
+    under-budget completion in their history.
     """
     from theme import budget_color  # local import avoids circular
 
@@ -127,6 +166,15 @@ def render_budget_meter(user) -> None:
     pct = (spent / user.weekly_budget) if user.weekly_budget > 0 else 0
     days = days_left_in_week()
     color = budget_color(pct)
+
+    streak = compute_streak(user.id, user.weekly_budget)
+    streak_chip = (
+        f"<span style='background:rgba(255,107,91,0.18);"
+        f" border:1px solid #FF6B5B; color:#FF8A70;"
+        f" border-radius:999px; padding:2px 10px; font-size:0.78rem;"
+        f" font-weight:700; margin-right:0.5rem;'>🔥 {streak}</span>"
+        if streak > 0 else ""
+    )
 
     st.markdown(
         f"""
@@ -143,6 +191,7 @@ def render_budget_meter(user) -> None:
         ">
           <span style="color:#7FB5A0;">Remaining this week</span>
           <span>
+            {streak_chip}
             <b style="color:{color}; font-size:1.15rem;">€{remaining:,.2f}</b>
             <span style="color:#7FB5A0; font-size:0.78rem; margin-left:0.6rem;">
               · {days} day{'s' if days != 1 else ''} left
@@ -210,12 +259,37 @@ def get_item_directory() -> HashTable:
     return st.session_state.item_directory_ht
 
 
+def _normalise_entry(entry) -> dict:
+    """
+    Turn whatever a directory store entry currently looks like into
+    the canonical dict shape:
+        {"price": float, "size_value": float, "size_unit": str, "brand": str}
+
+    Old entries (from before variants existed) were just a number; we
+    treat those as size=1 unit, no brand. New entries are already a
+    dict with the four fields.
+    """
+    if isinstance(entry, (int, float)):
+        return {
+            "price": float(entry),
+            "size_value": 1.0,
+            "size_unit": "unit",
+            "brand": "",
+        }
+    return {
+        "price":      float(entry.get("price", 0.0)),
+        "size_value": float(entry.get("size_value", 1.0)),
+        "size_unit":  entry.get("size_unit", "unit"),
+        "brand":      entry.get("brand", ""),
+    }
+
+
 def lookup_in_directory(name: str, supermarket: str = None):
     """
-    Look up the latest price for a product in the global Hash Table.
-    - If supermarket is given: returns the latest price at that store.
-    - If not: returns a dict of all known prices across stores.
-    Returns None if not found.
+    Returns just the price as a float for one store, or a flat
+    {store: price} dict when no store is specified, or None if the
+    item isn't on file. Backwards-compat shape for code that only
+    cares about the headline number.
     """
     ht = get_item_directory()
     result = ht.get(name.lower().strip())
@@ -223,25 +297,59 @@ def lookup_in_directory(name: str, supermarket: str = None):
         return None
     prices = result.get("prices", {})
     if supermarket:
-        return prices.get(supermarket)  # Latest price at this store
-    return prices  # All store prices
+        entry = prices.get(supermarket)
+        if entry is None:
+            return None
+        return _normalise_entry(entry)["price"]
+    return {
+        s: _normalise_entry(e)["price"]
+        for s, e in prices.items()
+    }
 
 
-def update_directory_in_memory(name: str, price: float, supermarket: str):
+def lookup_directory_full(name: str, supermarket: str = None):
     """
-    After adding an item, update the Hash Table immediately
-    so the change is reflected without reloading from Firestore.
+    Return the full variant info for a product:
+      - When `supermarket` is given: a single dict
+        {price, size_value, size_unit, brand} or None.
+      - Otherwise: {store: {price, size_value, size_unit, brand}}.
+    """
+    ht = get_item_directory()
+    result = ht.get(name.lower().strip())
+    if result is None:
+        return None
+    prices = result.get("prices", {})
+    if supermarket:
+        entry = prices.get(supermarket)
+        return _normalise_entry(entry) if entry is not None else None
+    return {s: _normalise_entry(e) for s, e in prices.items()}
+
+
+def update_directory_in_memory(name: str, price: float, supermarket: str,
+                               size_value: float = 1.0,
+                               size_unit: str = "unit",
+                               brand: str = "") -> None:
+    """
+    After adding an item, mirror the change in the in-memory directory
+    so subsequent same-render lookups see the new value without
+    re-reading Firestore.
     """
     ht = get_item_directory()
     key = name.lower().strip()
     existing = ht.get(key)
 
+    new_entry = {
+        "price":      round(float(price), 2),
+        "size_value": float(size_value),
+        "size_unit":  size_unit,
+        "brand":      brand,
+    }
     if existing:
-        existing["prices"][supermarket] = round(price, 2)
+        existing["prices"][supermarket] = new_entry
         existing["times_added"] = existing.get("times_added", 0) + 1
         ht.put(key, existing)
     else:
         ht.put(key, {
-            "prices": {supermarket: round(price, 2)},
+            "prices": {supermarket: new_entry},
             "times_added": 1,
         })

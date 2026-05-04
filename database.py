@@ -160,13 +160,18 @@ def update_user_profile(user_id, weekly_budget=None, preferred_store=None, name=
 # -------------------------------------------------------
 # PRODUCT functions (per-user price memory)
 # -------------------------------------------------------
-def upsert_product(user_id, name, price, supermarket):
+def upsert_product(user_id, name, price, supermarket,
+                   size_value: float = 1.0, size_unit: str = "unit",
+                   brand: str = ""):
     doc_id = f"{user_id}_{name.lower().strip()}_{supermarket}"
     db.collection("products").document(doc_id).set({
         "user_id": user_id,
         "name": name.lower().strip(),
         "price": float(price),
         "supermarket": supermarket,
+        "size_value": float(size_value),
+        "size_unit": size_unit,
+        "brand": brand,
         "updated_at": datetime.utcnow().isoformat(),
     })
 
@@ -201,21 +206,41 @@ def get_all_products(user_id):
 # This way when someone types "milk" at Mercadona, they get
 # the latest price anyone paid for milk at Mercadona.
 # -------------------------------------------------------
-def add_to_directory(name: str, price: float, supermarket: str):
+def add_to_directory(name: str, price: float, supermarket: str,
+                     size_value: float = 1.0, size_unit: str = "unit",
+                     brand: str = ""):
     """
-    Update the global directory with the latest price for
-    this product at this supermarket.
+    Update the global directory with the latest price for this product
+    at this supermarket.
+
+    Each store entry is stored as a dict so we can carry size + brand
+    alongside the price:
+
+        prices = {
+          "Mercadona": {"price": 0.89, "size_value": 1, "size_unit": "L", "brand": "Pascual"},
+          "Lidl":      {"price": 0.50, "size_value": 0.5, "size_unit": "L", "brand": "Milbona"},
+        }
+
+    Old entries that were just floats (`prices["Mercadona"] = 0.89`)
+    are still readable — the parser in state.py treats them as
+    `size_value=1, size_unit="unit", brand=""`.
     """
     key = name.lower().strip()
     doc_ref = db.collection("item_directory").document(key)
     doc = doc_ref.get()
-
     now = datetime.utcnow().isoformat()
+
+    new_entry = {
+        "price":      round(float(price), 2),
+        "size_value": float(size_value),
+        "size_unit":  size_unit,
+        "brand":      brand,
+    }
 
     if doc.exists:
         data = doc.to_dict()
         prices = data.get("prices", {})
-        prices[supermarket] = round(float(price), 2)
+        prices[supermarket] = new_entry
         doc_ref.update({
             "prices": prices,
             "last_updated": now,
@@ -224,7 +249,7 @@ def add_to_directory(name: str, price: float, supermarket: str):
     else:
         doc_ref.set({
             "name": key,
-            "prices": {supermarket: round(float(price), 2)},
+            "prices": {supermarket: new_entry},
             "last_updated": now,
             "times_added": 1,
         })
@@ -265,10 +290,13 @@ def save_session(user_id, supermarket, items, total, directory=None):
     })
     for item in items:
         db.collection("session_items").add({
-            "session_id": session_ref.id,
-            "name": item["name"],
-            "price": float(item["price"]),
-            "qty": int(item.get("qty", 1)),
+            "session_id":  session_ref.id,
+            "name":        item["name"],
+            "price":       float(item["price"]),
+            "qty":         int(item.get("qty", 1)),
+            "size_value":  float(item.get("size_value", 1.0)),
+            "size_unit":   item.get("size_unit", "unit"),
+            "brand":       item.get("brand", ""),
         })
 
     # Update the leaderboard counters for this user.
@@ -420,6 +448,92 @@ def backfill_user_savings(user_id: str, directory) -> None:
         "lifetime_could_have_spent": round(total_could_have, 2),
         "lifetime_sessions_counted": counted,
     })
+
+
+# -------------------------------------------------------
+# BADGES — passive achievements awarded on milestones.
+#
+# Each user document carries a `badges` array of badge IDs. Awarding
+# is idempotent: re-running the milestone checks never duplicates.
+# The Profile page reads this array to render the user's wall of
+# achievements; the Shop page surfaces newly-earned ones as toasts.
+# -------------------------------------------------------
+BADGES: dict[str, dict] = {
+    "first_shop":          {"emoji": "🛒", "name": "First shop",        "desc": "Saved your first shopping session."},
+    "10_sessions":         {"emoji": "📜", "name": "Regular",            "desc": "Completed 10 shopping sessions."},
+    "all_stores":          {"emoji": "🏪", "name": "Explorer",           "desc": "Shopped at all 6 supermarkets."},
+    "saved_50":            {"emoji": "💰", "name": "Saver — €50",        "desc": "Saved €50 with Budgit."},
+    "saved_100":           {"emoji": "💵", "name": "Saver — €100",       "desc": "Saved €100 with Budgit."},
+    "saved_500":           {"emoji": "💸", "name": "Big saver — €500",   "desc": "Saved €500 with Budgit."},
+    "greedy_used":         {"emoji": "⚡", "name": "Greedy",             "desc": "Used Greedy budget rescue."},
+    "knapsack_used":       {"emoji": "🧠", "name": "Optimal",            "desc": "Used 0/1 Knapsack budget rescue."},
+    "streak_4":            {"emoji": "🔥", "name": "4-week streak",      "desc": "Stayed under budget 4 weeks in a row."},
+    "first_quick_add":     {"emoji": "⚡", "name": "Quick adder",        "desc": "Used your first quick-add chip."},
+    "first_import":        {"emoji": "📝", "name": "List importer",     "desc": "Imported a grocery list into your cart."},
+    "week_under_budget":   {"emoji": "✅", "name": "Under budget",      "desc": "Finished a week under your weekly budget."},
+}
+
+
+def get_user_badges(user_id: str) -> list[str]:
+    doc = db.collection("users").document(user_id).get()
+    if not doc.exists:
+        return []
+    return list(doc.to_dict().get("badges", []))
+
+
+def award_badge(user_id: str, badge_id: str) -> bool:
+    """
+    Idempotent badge award. Returns True if the badge was just earned
+    (i.e. wasn't on the user before this call), False otherwise. The
+    Shop page uses this to know when to show the milestone toast.
+    """
+    if badge_id not in BADGES:
+        return False
+    ref = db.collection("users").document(user_id)
+    snap = ref.get()
+    if not snap.exists:
+        return False
+    earned = list(snap.to_dict().get("badges", []))
+    if badge_id in earned:
+        return False
+    earned.append(badge_id)
+    ref.update({"badges": earned})
+    return True
+
+
+def check_session_milestones(user_id: str) -> list[str]:
+    """
+    Run after a session is saved. Returns a list of badge IDs that
+    were *newly earned* by this save (so the caller can toast them).
+
+    Cheap to call: one users-doc read + one sessions read. Skipped
+    badges that depend on user input (greedy/knapsack/quick-add/import)
+    are awarded directly from the relevant button handlers, not here.
+    """
+    snap = db.collection("users").document(user_id).get()
+    if not snap.exists:
+        return []
+    user = snap.to_dict()
+    earned = set(user.get("badges", []))
+    sessions = get_sessions(user_id)
+    newly: list[str] = []
+
+    def _try(badge_id: str, condition: bool):
+        if condition and badge_id not in earned:
+            if award_badge(user_id, badge_id):
+                newly.append(badge_id)
+                earned.add(badge_id)
+
+    _try("first_shop",  len(sessions) >= 1)
+    _try("10_sessions", len(sessions) >= 10)
+    _try("all_stores",  len({s.get("supermarket") for s in sessions}) >= 6)
+
+    saved = float(user.get("lifetime_saved", 0.0))
+    _try("saved_50",  saved >= 50)
+    _try("saved_100", saved >= 100)
+    _try("saved_500", saved >= 500)
+
+    return newly
 
 
 def get_leaderboard_users(directory, min_sessions: int = 3) -> list[dict]:

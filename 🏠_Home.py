@@ -192,10 +192,34 @@ def _dashboard():
     # --- Lifetime stats ---
     st.divider()
     st.markdown("#### All time")
-    c1, c2, c3 = st.columns(3)
+
+    # Pull lifetime counters used by the savings leaderboard so we
+    # can also show the "you've saved €X" headline here. Big number,
+    # small effort — strongest motivator on the dashboard.
+    lt_saved, lt_could_have, lt_counted = db.get_user_savings_totals(user.id)
+    lt_pct = (lt_saved / lt_could_have * 100) if lt_could_have > 0 else 0
+    badges = db.get_user_badges(user.id)
+
+    if lt_saved > 0:
+        st.markdown(
+            f"<div class='budgit-card' style='text-align:center;"
+            f" background:linear-gradient(135deg, rgba(64,179,145,0.18), rgba(64,179,145,0.02));"
+            f" border:1px solid #40B391;'>"
+            f"<div style='color:#7FB5A0; font-size:0.85rem;'>You've saved with Budgit</div>"
+            f"<div style='font-size:2.2rem; font-weight:800; color:#40B391; margin:0.2rem 0;'>"
+            f"€{lt_saved:,.2f}</div>"
+            f"<div style='color:#7FB5A0; font-size:0.78rem;'>"
+            f"That's {lt_pct:.1f}% off vs the most expensive store on file"
+            f" · across {lt_counted} counted shop{'s' if lt_counted != 1 else ''}"
+            f"</div></div>",
+            unsafe_allow_html=True,
+        )
+
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total sessions", len(sessions))
     c2.metric("Total spent", f"€{sum(s['total'] for s in sessions):,.2f}")
     c3.metric("Products learned", len(db.get_all_products(user.id)))
+    c4.metric("Badges earned", len(badges))
 
 
 # -------------------------------------------------------
