@@ -48,6 +48,59 @@ with st.form("profile"):
 
 
 st.divider()
+
+# -----------------------------------------------------
+# Badge wall — every achievement currently defined,
+# split into "earned" (full colour) and "locked" (dimmed).
+# Hover on each badge to read the description.
+# -----------------------------------------------------
+st.markdown("#### 🏆 Achievements")
+earned_ids = set(db.get_user_badges(user.id))
+total = len(db.BADGES)
+st.caption(f"{len(earned_ids)} of {total} unlocked.")
+
+cols = st.columns(4)
+for i, (bid, meta) in enumerate(db.BADGES.items()):
+    is_earned = bid in earned_ids
+    bg     = "rgba(64,179,145,0.18)" if is_earned else "rgba(255,255,255,0.02)"
+    border = "#40B391" if is_earned else "#2A3D34"
+    color  = "#E8F5EF" if is_earned else "#5C6B66"
+    emoji_opacity = "1.0" if is_earned else "0.35"
+    desc = meta["desc"].replace('"', "&quot;")
+    cols[i % 4].markdown(
+        f"<div title='{desc}' style='background:{bg};"
+        f" border:1px solid {border}; border-radius:12px;"
+        f" padding:0.7rem 0.5rem; margin-bottom:0.5rem;"
+        f" text-align:center;'>"
+        f"<div style='font-size:1.6rem; opacity:{emoji_opacity};'>{meta['emoji']}</div>"
+        f"<div style='font-size:0.78rem; color:{color}; font-weight:600;'>"
+        f"{meta['name']}</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+st.divider()
+
+# -----------------------------------------------------
+# Lifetime savings summary so the Profile page mirrors
+# what the Home dashboard shows.
+# -----------------------------------------------------
+lt_saved, lt_could_have, lt_counted = db.get_user_savings_totals(user.id)
+if lt_counted > 0:
+    pct = (lt_saved / lt_could_have * 100) if lt_could_have > 0 else 0
+    st.markdown(
+        f"<div class='budgit-card' style='text-align:center;'>"
+        f"<div style='color:#7FB5A0; font-size:0.85rem;'>Lifetime savings</div>"
+        f"<div style='font-size:1.6rem; font-weight:800; color:#40B391;'>"
+        f"€{lt_saved:,.2f}</div>"
+        f"<div style='color:#7FB5A0; font-size:0.78rem;'>"
+        f"{pct:.1f}% off vs the most expensive store on file"
+        f" · {lt_counted} counted shop{'s' if lt_counted != 1 else ''}"
+        f"</div></div>",
+        unsafe_allow_html=True,
+    )
+
+st.divider()
 st.markdown("#### Learned prices")
 
 products = db.get_all_products(user.id)

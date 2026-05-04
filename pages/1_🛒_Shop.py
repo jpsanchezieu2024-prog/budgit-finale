@@ -12,7 +12,8 @@ import database as db
 from state import (
     init_state, require_login, SUPERMARKETS,
     get_bst, rebuild_bst, get_item_directory,
-    lookup_in_directory, update_directory_in_memory, load_item_directory,
+    lookup_in_directory, lookup_directory_full,
+    update_directory_in_memory, load_item_directory,
     render_sidebar, render_budget_meter, start_of_current_week,
     get_top_items_cached,
 )
@@ -182,6 +183,10 @@ if top_items:
                     db.upsert_product(user.id, name, price, store)
                     db.add_to_directory(name, price, store)
                     update_directory_in_memory(name, price, store)
+                    # Award the "Quick adder" badge on first use.
+                    if db.award_badge(user.id, "first_quick_add"):
+                        st.session_state.setdefault(
+                            "pending_badges", []).append("first_quick_add")
                     st.toast(f"Added {name.title()} — €{price:.2f}", icon="🛍️")
                     st.rerun()
 
@@ -192,16 +197,38 @@ if "last_typed_name" not in st.session_state:
     st.session_state.last_typed_name = ""
 
 with st.form("add_item", clear_on_submit=True):
-    col_name, col_price, col_qty = st.columns([3, 1.2, 1])
-
-    with col_name:
+    # Row 1: Name and Brand (brand is optional and lets users separate
+    # variants of the same item — Pascual milk vs Lidl-brand milk).
+    row1_col_name, row1_col_brand = st.columns([2, 1])
+    with row1_col_name:
         name_in = st.text_input(
             "Product name",
             placeholder="e.g. milk, bread, eggs",
             key="item_name",
         )
+    with row1_col_brand:
+        brand_in = st.text_input(
+            "Brand (optional)",
+            placeholder="e.g. Pascual",
+            key="add_item_brand",
+        )
 
-    with col_price:
+    # Row 2: Size + Unit + Price + Qty + Submit.
+    # Size+Unit default to 1+unit so items the user doesn't care about
+    # weighing (e.g. "eggs", "loaf of bread") just behave like before.
+    row2_size, row2_unit, row2_price, row2_qty = st.columns([1, 1, 1.4, 0.9])
+
+    with row2_size:
+        size_in = st.number_input(
+            "Size", min_value=0.01, value=1.0, step=0.5,
+            key="add_item_size", format="%.2f",
+        )
+    with row2_unit:
+        unit_in = st.selectbox(
+            "Unit", UNIT_OPTIONS, index=0, key="add_item_unit",
+        )
+
+    with row2_price:
         # Autofill: check user's own memory first, then global
         # directory. Always clamped to >= 0 so the number_input's
         # min_value constraint can't be violated by stale or weird
@@ -223,10 +250,13 @@ with st.form("add_item", clear_on_submit=True):
             key="add_item_price",
         )
 
-    with col_qty:
-        qty_in = st.number_input("Qty", min_value=1, value=1, step=1)
+    with row2_qty:
+        qty_in = st.number_input("Qty", min_value=1, value=1, step=1,
+                                 key="add_item_qty")
 
-    submitted = st.form_submit_button("➕ Add to Cart", type="primary")
+    submitted = st.form_submit_button("➕ Add to Cart",
+                                      type="primary",
+                                      use_container_width=True)
 
     if submitted:
         # Validate name and price separately so the user gets a
@@ -234,10 +264,15 @@ with st.form("add_item", clear_on_submit=True):
         # combined "name OR price" error which read as "negative"
         # when it was really just a 0.0-default price field.
         clean_name = name_in.strip() if name_in else ""
+        clean_brand = (brand_in or "").strip()
         try:
             clean_price = float(price_in or 0.0)
         except (TypeError, ValueError):
             clean_price = 0.0
+        try:
+            clean_size = float(size_in or 1.0)
+        except (TypeError, ValueError):
+            clean_size = 1.0
 
         if not clean_name:
             st.error("Please enter a product name.")
@@ -250,24 +285,42 @@ with st.form("add_item", clear_on_submit=True):
             existing = cart._items.get(key)
             if existing is not None:
                 # UPDATE the existing cart row — don't add a duplicate
-                cart.update(clean_name, price=clean_price,
-                            qty=existing.qty + int(qty_in))
+                cart.update(
+                    clean_name, price=clean_price,
+                    qty=existing.qty + int(qty_in),
+                    size_value=clean_size, size_unit=unit_in,
+                    brand=clean_brand,
+                )
                 st.toast(
                     f"Updated {clean_name.title()} — now "
                     f"{existing.qty + int(qty_in)}× at €{clean_price:.2f}",
                     icon="✏️",
                 )
             else:
-                cart.add(clean_name, clean_price, int(qty_in))
+                cart.add(
+                    clean_name, clean_price, int(qty_in),
+                    size_value=clean_size, size_unit=unit_in,
+                    brand=clean_brand,
+                )
                 st.toast(
                     f"Added {clean_name.title()} — €{clean_price:.2f}",
                     icon="🛍️",
                 )
 
-            # Save to user's price memory and global directory
-            db.upsert_product(user.id, clean_name, clean_price, store)
-            db.add_to_directory(clean_name, clean_price, store)
-            update_directory_in_memory(clean_name, clean_price, store)
+            # Save to user's price memory and global directory,
+            # including the variant info (brand + size + unit).
+            db.upsert_product(
+                user.id, clean_name, clean_price, store,
+                size_value=clean_size, size_unit=unit_in, brand=clean_brand,
+            )
+            db.add_to_directory(
+                clean_name, clean_price, store,
+                size_value=clean_size, size_unit=unit_in, brand=clean_brand,
+            )
+            update_directory_in_memory(
+                clean_name, clean_price, store,
+                size_value=clean_size, size_unit=unit_in, brand=clean_brand,
+            )
             rebuild_bst(user.id)
 
             st.session_state.last_typed_name = clean_name
@@ -298,48 +351,98 @@ if typed:
     if clean:
         st.caption("📂 From your history: " + ", ".join(clean))
 
-    all_prices = lookup_in_directory(typed)
-    if all_prices:
-        sorted_prices = sorted(all_prices.items(), key=lambda x: x[1])
-        cheapest_store, cheapest_price = sorted_prices[0]
-        current_price = all_prices.get(store)
+    # Pull the FULL variant info per store (price + size + unit + brand)
+    # so we can rank by price-per-base-unit, not just absolute price.
+    full_entries = lookup_directory_full(typed)
+    if full_entries:
+        # Compute (store, entry, ppu_base, ppu_value) tuples.
+        ranked = []
+        for s_name, entry in full_entries.items():
+            base, ppu = price_per_base_unit(
+                entry["price"], entry["size_value"], entry["size_unit"],
+            )
+            ranked.append((s_name, entry, base, ppu))
+        # Rank by price-per-base-unit (lowest first). When sizes match
+        # this is identical to ranking by price; when they differ it's
+        # the fairer comparison.
+        ranked.sort(key=lambda r: r[3])
+        cheapest_store, cheapest_entry, cheapest_base, cheapest_ppu = ranked[0]
+        current_entry = full_entries.get(store)
 
-        # Render each store as a coloured chip — green crown on
-        # cheapest, bold "(here)" on the user's current store, dim
-        # grey for everything else.
+        # Render each store as a coloured chip showing absolute price
+        # and (when meaningfully different) price per base unit.
         chip_html = []
-        for s_name, p in sorted_prices:
-            if s_name == cheapest_store and len(sorted_prices) > 1:
+        for s_name, entry, base, ppu in ranked:
+            size_label = format_size(entry["size_value"], entry["size_unit"])
+            ppu_label = format_price_per_unit(
+                entry["price"], entry["size_value"], entry["size_unit"]
+            )
+            sub_text = ""
+            if size_label or entry["brand"]:
+                bits = []
+                if entry["brand"]:
+                    bits.append(entry["brand"])
+                if size_label:
+                    bits.append(size_label)
+                if ppu_label:
+                    bits.append(ppu_label)
+                sub_text = (
+                    f"<div style='font-size:0.72rem; color:#7FB5A0;'>"
+                    f"{' · '.join(bits)}</div>"
+                )
+
+            if s_name == cheapest_store and len(ranked) > 1:
                 chip_html.append(
-                    f"<span style='color:#40B391; font-weight:700;'>"
-                    f"👑 {s_name} €{p:.2f}</span>"
+                    f"<div style='display:inline-block; margin:0 6px 4px 0;"
+                    f" color:#40B391; font-weight:700;'>"
+                    f"👑 {s_name} €{entry['price']:.2f}{sub_text}</div>"
                 )
             elif s_name == store:
                 chip_html.append(
-                    f"<span style='color:#E8F5EF; font-weight:600;'>"
-                    f"{s_name} €{p:.2f} (here)</span>"
+                    f"<div style='display:inline-block; margin:0 6px 4px 0;"
+                    f" color:#E8F5EF; font-weight:600;'>"
+                    f"{s_name} €{entry['price']:.2f} (here){sub_text}</div>"
                 )
             else:
                 chip_html.append(
-                    f"<span style='color:#7FB5A0;'>{s_name} €{p:.2f}</span>"
+                    f"<div style='display:inline-block; margin:0 6px 4px 0;"
+                    f" color:#7FB5A0;'>"
+                    f"{s_name} €{entry['price']:.2f}{sub_text}</div>"
                 )
 
         # Highlight savings if there's a cheaper alternative to the
-        # current store.
+        # current store. Compute on a per-base-unit basis so a "1L for
+        # €1.20 here vs 0.5L for €0.50 elsewhere" comparison is honest
+        # (€1.20/L vs €1.00/L → €0.20/L savings, which we then scale
+        # to the size the user is actually buying — `current_entry`).
         savings_msg = ""
-        if (
-            current_price is not None
-            and cheapest_store != store
-            and current_price > cheapest_price
-        ):
-            savings = current_price - cheapest_price
-            savings_msg = (
-                f"<div style='color:#FFB84D; font-size:0.82rem; "
-                f"margin-top:0.25rem;'>"
-                f"💡 Save <b>€{savings:.2f}</b> by going to {cheapest_store}"
-                f"</div>"
+        if current_entry is not None and cheapest_store != store:
+            _, current_ppu = price_per_base_unit(
+                current_entry["price"],
+                current_entry["size_value"],
+                current_entry["size_unit"],
             )
-        elif current_price is None and len(sorted_prices) >= 1:
+            if current_ppu > cheapest_ppu:
+                savings_per_base = current_ppu - cheapest_ppu
+                # Scale to the current store's package size to give
+                # the user a tangible "you'd save €X" number.
+                _, current_in_base = (
+                    cheapest_base,
+                    current_entry["size_value"]
+                    * (0.001 if current_entry["size_unit"] in ("g", "ml")
+                       else 1.0),
+                )
+                tangible = savings_per_base * max(current_in_base, 1.0)
+                savings_msg = (
+                    f"<div style='color:#FFB84D; font-size:0.82rem; "
+                    f"margin-top:0.4rem;'>"
+                    f"💡 Save ~<b>€{tangible:.2f}</b> per package by going to "
+                    f"<b>{cheapest_store}</b> "
+                    f"(€{cheapest_ppu:.2f}/{cheapest_base} vs "
+                    f"€{current_ppu:.2f}/{cheapest_base})"
+                    f"</div>"
+                )
+        elif current_entry is None and len(ranked) >= 1:
             savings_msg = (
                 f"<div style='color:#7FB5A0; font-size:0.78rem; "
                 f"margin-top:0.25rem;'>"
@@ -352,7 +455,7 @@ if typed:
             f"border:1px solid #2A3D34; border-radius:10px; "
             f"padding:0.5rem 0.8rem; margin-top:0.4rem; "
             f"font-size:0.85rem;'>"
-            f"🌍 " + " · ".join(chip_html) +
+            f"🌍 " + "".join(chip_html) +
             f"{savings_msg}"
             f"</div>",
             unsafe_allow_html=True,
@@ -488,6 +591,10 @@ if grocery_items:
                         f"Added {added} item{'s' if added != 1 else ''} to cart "
                         "and removed them from your list."
                     )
+                    # Award the "List importer" badge on first import.
+                    if db.award_badge(user.id, "first_import"):
+                        st.session_state.setdefault(
+                            "pending_badges", []).append("first_import")
                 if no_price:
                     pretty = ", ".join(n.title() for n in no_price)
                     st.warning(
@@ -517,10 +624,35 @@ if len(cart) == 0:
 else:
     for item in list(cart):
         c1, c2, c3, c4, c5 = st.columns([3, 1.2, 1, 1.2, 0.8])
+
+        # Build the secondary info line that shows brand + size + €/unit
+        # only when the user actually filled them in. For default
+        # (1 unit, no brand) entries the line stays minimal.
+        size_lbl = format_size(item.size_value, item.size_unit)
+        ppu_lbl  = format_price_per_unit(item.price, item.size_value, item.size_unit)
+        meta_bits = []
+        if item.brand:
+            meta_bits.append(item.brand)
+        if size_lbl:
+            meta_bits.append(size_lbl)
+        meta_line = (
+            f"<span style='color:#7FB5A0; font-size:0.78rem;'>"
+            f"{' · '.join(meta_bits)}</span><br>"
+            if meta_bits else ""
+        )
+        ppu_line = (
+            f"<span style='color:#40B391; font-size:0.74rem;'>{ppu_lbl}</span>"
+            if ppu_lbl else ""
+        )
+
         c1.markdown(
             f"<div style='padding-top:0.6rem;'>"
             f"<b>{item.name.title()}</b><br>"
-            f"<span style='color:#7FB5A0; font-size:0.82rem;'>€{item.price:.2f} × {item.qty}</span>"
+            f"{meta_line}"
+            f"<span style='color:#7FB5A0; font-size:0.82rem;'>"
+            f"€{item.price:.2f} × {item.qty}"
+            f"{' · ' + ppu_lbl if ppu_lbl else ''}"
+            f"</span>"
             f"</div>",
             unsafe_allow_html=True,
         )
@@ -537,9 +669,21 @@ else:
                                     format="%.2f")
         if new_qty != item.qty or abs(new_price - item.price) > 0.001:
             cart.update(item.name, price=new_price, qty=new_qty)
-            db.upsert_product(user.id, item.name, new_price, store)
-            db.add_to_directory(item.name, new_price, store)
-            update_directory_in_memory(item.name, new_price, store)
+            db.upsert_product(
+                user.id, item.name, new_price, store,
+                size_value=item.size_value, size_unit=item.size_unit,
+                brand=item.brand,
+            )
+            db.add_to_directory(
+                item.name, new_price, store,
+                size_value=item.size_value, size_unit=item.size_unit,
+                brand=item.brand,
+            )
+            update_directory_in_memory(
+                item.name, new_price, store,
+                size_value=item.size_value, size_unit=item.size_unit,
+                brand=item.brand,
+            )
             st.rerun()
 
         if c5.button("❌", key=f"{key_base}_rm", help="Remove item"):
@@ -610,6 +754,11 @@ if cart_total > _rescue_budget and user.weekly_budget > 0:
     if st.button("Apply — remove these from cart", type="primary"):
         for it in result["dropped"]:
             cart.remove(it["name"])
+        # Award a badge the first time the user picks each rescue
+        # algorithm — gives them a tangible nudge to try the other one.
+        badge_id = "greedy_used" if mode.startswith("⚡") else "knapsack_used"
+        if db.award_badge(user.id, badge_id):
+            st.session_state.setdefault("pending_badges", []).append(badge_id)
         st.rerun()
 
 
@@ -666,6 +815,14 @@ def _confirm_end_session():
         # the cache so the quick-add chips refresh on next render.
         st.session_state.pop("top_items", None)
         st.session_state.session_just_saved = (final_total, final_store)
+
+        # Run the post-save milestone check and queue any newly-earned
+        # badges so the next render of the page shows toasts for them.
+        newly_earned = db.check_session_milestones(user.id)
+        if newly_earned:
+            existing = st.session_state.get("pending_badges", [])
+            st.session_state.pending_badges = existing + newly_earned
+
         st.rerun()
 
     if btn_cancel.button("❌ Cancel", use_container_width=True,
