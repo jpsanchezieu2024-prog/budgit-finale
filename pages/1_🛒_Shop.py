@@ -224,7 +224,7 @@ with st.form("add_item", clear_on_submit=True):
             key="add_item_price",
         )
 
-    with qty_col:
+    with col_qty:
         qty_in = st.number_input("Qty", min_value=1, value=1, step=1,
                                  key="add_item_qty")
 
