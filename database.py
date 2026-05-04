@@ -302,6 +302,25 @@ def get_session_items(session_id):
     return items
 
 
+def get_user_top_items(user_id: str, limit: int = 6) -> list[tuple]:
+    """
+    Return the user's most-purchased items by total quantity across
+    every saved session, as a list of (name, total_qty) tuples sorted
+    descending by quantity.
+
+    Used by the Shop page to render quick-add chips for the user's
+    favourite items. The result is cached in session state by
+    `state.get_top_items_cached`, so this is only computed once per
+    login (or after a session is saved, which invalidates the cache).
+    """
+    counter: dict[str, int] = {}
+    for s in get_sessions(user_id):
+        for it in get_session_items(s["id"]):
+            name = it["name"].lower().strip()
+            counter[name] = counter.get(name, 0) + int(it.get("qty", 1))
+    return sorted(counter.items(), key=lambda kv: -kv[1])[:limit]
+
+
 # -------------------------------------------------------
 # GROCERY LIST functions
 #

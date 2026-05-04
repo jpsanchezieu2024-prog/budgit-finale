@@ -8,6 +8,8 @@ Manages everything stored across Streamlit reruns:
     - Hash Table for global item directory (latest price per supermarket)
 """
 
+from datetime import datetime, timedelta
+
 import streamlit as st
 
 import database as db
@@ -16,6 +18,32 @@ from algorithms.bst import BST
 from algorithms.hash_table import HashTable
 
 SUPERMARKETS = ["Mercadona", "Lidl", "Carrefour", "Dia", "Aldi", "Alcampo"]
+
+
+# ---------------------------------------------------------------------
+# Calendar-week boundaries.
+#
+# Budgit's weekly budget runs on a fixed Monday 00:00 → Sunday 23:59 UTC
+# cycle. Using a calendar week (instead of a rolling 7-day window) means:
+#   - The budget visibly *resets* every Monday morning, which is what
+#     users intuitively expect.
+#   - Sunday-night spending no longer "follows you into Monday".
+#   - "Days left" and "this week's spending" use the same definition of
+#     a week, so the dashboard is internally consistent.
+# ---------------------------------------------------------------------
+def start_of_current_week() -> datetime:
+    """Return Monday 00:00 UTC of the current calendar week."""
+    today = datetime.utcnow()
+    monday_date = (today - timedelta(days=today.weekday())).date()
+    return datetime(monday_date.year, monday_date.month, monday_date.day)
+
+
+def days_left_in_week() -> int:
+    """
+    How many days remain in the current calendar week, including today.
+    Monday → 7, Tuesday → 6, …, Sunday → 1.
+    """
+    return 7 - datetime.utcnow().weekday()
 
 
 def init_state():
@@ -74,6 +102,70 @@ def render_sidebar(user) -> None:
             for k in _USER_SCOPED_KEYS:
                 st.session_state.pop(k, None)
             st.switch_page("🏠_Home.py")
+
+
+def render_budget_meter(user) -> None:
+    """
+    Thin always-visible budget bar shown at the top of every
+    authenticated page (except Home, which has its own big card).
+
+    The bar shows "remaining this calendar week" budget with a colour
+    that fades from green through yellow to red as the budget is
+    consumed, plus the number of days left in the week. Anywhere in
+    the app, the user can glance up and instantly answer "how much do
+    I have left?" — that's the single biggest UX win in v1.
+    """
+    from theme import budget_color  # local import avoids circular
+
+    week_start_iso = start_of_current_week().isoformat()
+    sessions = db.get_sessions(user.id)
+    spent = sum(
+        s["total"] for s in sessions
+        if s["created_at"] >= week_start_iso
+    )
+    remaining = user.weekly_budget - spent
+    pct = (spent / user.weekly_budget) if user.weekly_budget > 0 else 0
+    days = days_left_in_week()
+    color = budget_color(pct)
+
+    st.markdown(
+        f"""
+        <div style="
+            background: linear-gradient(90deg, {color}26, transparent 70%);
+            border-left: 4px solid {color};
+            border-radius: 0 8px 8px 0;
+            padding: 0.55rem 1rem;
+            margin: 0 0 1rem 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.92rem;
+        ">
+          <span style="color:#7FB5A0;">Remaining this week</span>
+          <span>
+            <b style="color:{color}; font-size:1.15rem;">€{remaining:,.2f}</b>
+            <span style="color:#7FB5A0; font-size:0.78rem; margin-left:0.6rem;">
+              · {days} day{'s' if days != 1 else ''} left
+            </span>
+          </span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def get_top_items_cached(user_id: str, limit: int = 6) -> list[tuple]:
+    """
+    Cached accessor for the user's most-bought items.
+
+    First call hits Firestore via `db.get_user_top_items`; subsequent
+    calls within the same session reuse the cached list. The cache is
+    invalidated by clearing `st.session_state.top_items`, which the
+    Shop page does after saving a session.
+    """
+    if "top_items" not in st.session_state:
+        st.session_state.top_items = db.get_user_top_items(user_id, limit=limit)
+    return st.session_state.top_items
 
 
 def rebuild_bst(user_id: str) -> BST:

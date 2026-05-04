@@ -12,7 +12,11 @@ from datetime import datetime, timedelta
 
 import database as db
 from models import Cart
-from state import init_state, current_user, SUPERMARKETS, rebuild_bst, load_item_directory, render_sidebar
+from state import (
+    init_state, current_user, SUPERMARKETS,
+    rebuild_bst, load_item_directory, render_sidebar,
+    start_of_current_week, days_left_in_week,
+)
 from theme import apply_theme, budget_tree, budget_pill, budget_advice, budget_color
 
 
@@ -109,16 +113,20 @@ def _dashboard():
     user = current_user()
 
     # --- Week stats ---
+    # Use a fixed Monday→Sunday calendar week so the budget resets
+    # every Monday at 00:00 UTC. This was the user-reported bug: the
+    # previous rolling 7-day window meant that a Sunday-night grocery
+    # run still counted on Monday morning, so the budget never visibly
+    # reset.
     sessions = db.get_sessions(user.id)
-    week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
-    week_sessions = [s for s in sessions if s["created_at"] > week_ago]
+    week_start_iso = start_of_current_week().isoformat()
+    week_sessions = [s for s in sessions if s["created_at"] >= week_start_iso]
     week_spend = sum(s["total"] for s in week_sessions)
     remaining = user.weekly_budget - week_spend
     pct = (week_spend / user.weekly_budget) if user.weekly_budget > 0 else 0
 
-    # Days left in the week
-    today = datetime.utcnow()
-    days_left = 7 - today.weekday()  # days until Sunday
+    # Days left in the same calendar week (Monday → 7, Sunday → 1)
+    days_left = days_left_in_week()
 
     # --- Header ---
     first_name = user.name.split(" ")[0]

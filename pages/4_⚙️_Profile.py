@@ -7,7 +7,7 @@ from __future__ import annotations
 import streamlit as st
 
 import database as db
-from state import init_state, require_login, SUPERMARKETS, render_sidebar
+from state import init_state, require_login, SUPERMARKETS, render_sidebar, render_budget_meter
 from theme import apply_theme
 
 
@@ -16,6 +16,7 @@ apply_theme()
 init_state()
 user = require_login()
 render_sidebar(user)
+render_budget_meter(user)
 
 st.markdown("### ⚙️ Profile & budget")
 

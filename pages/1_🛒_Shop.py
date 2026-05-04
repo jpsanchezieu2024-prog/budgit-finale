@@ -13,7 +13,8 @@ from state import (
     init_state, require_login, SUPERMARKETS,
     get_bst, rebuild_bst, get_item_directory,
     lookup_in_directory, update_directory_in_memory, load_item_directory,
-    render_sidebar,
+    render_sidebar, render_budget_meter, start_of_current_week,
+    get_top_items_cached,
 )
 from theme import apply_theme, budget_pill
 from algorithms.greedy import greedy_fit, knapsack_fit
@@ -24,6 +25,7 @@ apply_theme()
 init_state()
 user = require_login()
 render_sidebar(user)
+render_budget_meter(user)
 
 if st.session_state.shop_store is None:
     st.session_state.shop_store = user.preferred_store or SUPERMARKETS[0]
@@ -63,17 +65,46 @@ cart = st.session_state.cart
 
 # -------------------------------------------------------
 # Running total
+#
+# Shows three things in priority order:
+#   1. The current cart total (what you'll spend at checkout).
+#   2. Your remaining budget for *this calendar week* AFTER paying
+#      for everything in the cart — i.e. budget − (already spent
+#      this week) − cart total. This is the number that actually
+#      tells the user whether they can afford to keep adding items.
+#   3. A progress bar of total weekly utilisation.
 # -------------------------------------------------------
-total = cart.total()
-pct = (total / user.weekly_budget) if user.weekly_budget > 0 else 0
+cart_total = cart.total()
+
+# Pull this week's previously-completed sessions so the running budget
+# accounts for what the user has already spent earlier this week.
+_week_start_iso = start_of_current_week().isoformat()
+_already_spent_this_week = sum(
+    s["total"] for s in db.get_sessions(user.id)
+    if s["created_at"] >= _week_start_iso
+)
+
+projected_week_spend = _already_spent_this_week + cart_total
+remaining_this_week = user.weekly_budget - projected_week_spend
+pct = (
+    projected_week_spend / user.weekly_budget
+    if user.weekly_budget > 0 else 0
+)
+rem_color = "#FF6B5B" if remaining_this_week < 0 else "#40B391"
 
 st.markdown(
     f"""
     <div class="budgit-accent">
-      <p class="budgit-total">€{total:,.2f}</p>
-      <div class="budgit-total-label">
-        {min(pct,1.0)*100:.0f}% of €{user.weekly_budget:,.2f} weekly budget
+      <div style="color:#7FB5A0; font-size:0.9rem; margin-bottom:0.2rem;">Cart total</div>
+      <p class="budgit-total">€{cart_total:,.2f}</p>
+      <div class="budgit-total-label" style="margin-top:0.6rem;">
+        After this shop you'll have
+        <b style="color:{rem_color};">€{remaining_this_week:,.2f}</b>
+        left of your <b>€{user.weekly_budget:,.2f}</b> weekly budget
         &nbsp; {budget_pill(pct)}
+      </div>
+      <div style="color:#7FB5A0; font-size:0.78rem; margin-top:0.4rem;">
+        Already spent this week: €{_already_spent_this_week:,.2f}
       </div>
     </div>
     """,
@@ -91,6 +122,51 @@ st.progress(min(pct, 1.0))
 # updating qty — but here we also update the price in place
 # if the same product is added again with a new price.
 # -------------------------------------------------------
+# -------------------------------------------------------
+# Quick-add chips — your most frequently bought items.
+#
+# A row of one-tap buttons that append the user's top items
+# (across all sessions) directly to the cart, using the latest
+# known price at the current store. Goes from 4 taps → 1 tap
+# for the items the user buys all the time.
+# -------------------------------------------------------
+top_items = get_top_items_cached(user.id, limit=6)
+
+if top_items:
+    # Filter to items we have a known price for at the current store.
+    chips = []
+    for name, _qty_total in top_items:
+        price = db.lookup_product_price(user.id, name, store)
+        if price is None:
+            price = lookup_in_directory(name, store)
+        if price is not None and price > 0:
+            chips.append((name, float(price)))
+
+    if chips:
+        st.markdown("##### ⚡ Quick add — your favourites")
+        # Render in rows of 3 so chips stay readable on narrower screens.
+        for row_start in range(0, len(chips), 3):
+            row = chips[row_start:row_start + 3]
+            cols = st.columns(len(row))
+            for col, (name, price) in zip(cols, row):
+                if col.button(
+                    f"➕ {name.title()}\n€{price:.2f}",
+                    key=f"quick_{name}",
+                    use_container_width=True,
+                ):
+                    existing = cart._items.get(name)
+                    if existing is not None:
+                        cart.update(name, price=price, qty=existing.qty + 1)
+                    else:
+                        cart.add(name, price, 1)
+                    # Learn the price (in case the directory's value changed
+                    # since the user last logged this item).
+                    db.upsert_product(user.id, name, price, store)
+                    db.add_to_directory(name, price, store)
+                    update_directory_in_memory(name, price, store)
+                    st.toast(f"Added {name.title()} — €{price:.2f}", icon="🛍️")
+                    st.rerun()
+
 st.markdown("#### Add an item")
 
 # Keep track of what's being typed for autofill hints
@@ -155,7 +231,19 @@ with st.form("add_item", clear_on_submit=True):
             st.session_state.last_typed_name = name_in
             st.rerun()
 
-# Autocomplete hints below the form
+# -------------------------------------------------------
+# Live autocomplete + cross-store price comparison.
+#
+# As soon as the user types in the name field, we:
+#   1. Pull prefix-matching product names out of the BST and surface
+#      them as a "From your history" hint.
+#   2. Show the latest known price for that product at every store
+#      in the global directory, with a 👑 crown on the cheapest, the
+#      current store's price labelled "(here)", and an explicit
+#      "Save €X by going to Y" call-out when a cheaper alternative
+#      exists. Turns the global Hash Table into actionable advice
+#      at the moment of the user's decision.
+# -------------------------------------------------------
 typed = st.session_state.get("item_name", "")
 if typed:
     suggestions = get_bst(user.id).prefix_search(typed, limit=5)
@@ -166,10 +254,62 @@ if typed:
     all_prices = lookup_in_directory(typed)
     if all_prices:
         sorted_prices = sorted(all_prices.items(), key=lambda x: x[1])
-        price_hints = " · ".join(
-            f"**{s}**: €{p:.2f}" for s, p in sorted_prices
+        cheapest_store, cheapest_price = sorted_prices[0]
+        current_price = all_prices.get(store)
+
+        # Render each store as a coloured chip — green crown on
+        # cheapest, bold "(here)" on the user's current store, dim
+        # grey for everything else.
+        chip_html = []
+        for s_name, p in sorted_prices:
+            if s_name == cheapest_store and len(sorted_prices) > 1:
+                chip_html.append(
+                    f"<span style='color:#40B391; font-weight:700;'>"
+                    f"👑 {s_name} €{p:.2f}</span>"
+                )
+            elif s_name == store:
+                chip_html.append(
+                    f"<span style='color:#E8F5EF; font-weight:600;'>"
+                    f"{s_name} €{p:.2f} (here)</span>"
+                )
+            else:
+                chip_html.append(
+                    f"<span style='color:#7FB5A0;'>{s_name} €{p:.2f}</span>"
+                )
+
+        # Highlight savings if there's a cheaper alternative to the
+        # current store.
+        savings_msg = ""
+        if (
+            current_price is not None
+            and cheapest_store != store
+            and current_price > cheapest_price
+        ):
+            savings = current_price - cheapest_price
+            savings_msg = (
+                f"<div style='color:#FFB84D; font-size:0.82rem; "
+                f"margin-top:0.25rem;'>"
+                f"💡 Save <b>€{savings:.2f}</b> by going to {cheapest_store}"
+                f"</div>"
+            )
+        elif current_price is None and len(sorted_prices) >= 1:
+            savings_msg = (
+                f"<div style='color:#7FB5A0; font-size:0.78rem; "
+                f"margin-top:0.25rem;'>"
+                f"No price on file for this item at {store}."
+                f"</div>"
+            )
+
+        st.markdown(
+            f"<div style='background:rgba(255,255,255,0.02); "
+            f"border:1px solid #2A3D34; border-radius:10px; "
+            f"padding:0.5rem 0.8rem; margin-top:0.4rem; "
+            f"font-size:0.85rem;'>"
+            f"🌍 " + " · ".join(chip_html) +
+            f"{savings_msg}"
+            f"</div>",
+            unsafe_allow_html=True,
         )
-        st.caption(f"🌍 Latest prices — {price_hints}")
 
 
 
@@ -343,7 +483,7 @@ else:
             unsafe_allow_html=True,
         )
         key_base = f"it_{item.name}"
-        new_qty = c3.number_input("Qty", 1, 99, item.qty, step=1,
+        new_qty = c3.number_input("Qty", 1, 999, item.qty, step=1,
                                   key=f"{key_base}_qty", label_visibility="collapsed")
         new_price = c4.number_input("€", 0.0, 9999.0, item.price, step=0.1,
                                     key=f"{key_base}_price", label_visibility="collapsed",
@@ -362,7 +502,7 @@ else:
     st.markdown(
         f"<div class='budgit-card' style='text-align:right;'>"
         f"<span style='color:#7FB5A0;'>Cart total: </span>"
-        f"<span style='color:#40B391; font-size:1.4rem; font-weight:800;'>€{total:.2f}</span>"
+        f"<span style='color:#40B391; font-size:1.4rem; font-weight:800;'>€{cart_total:.2f}</span>"
         f"</div>",
         unsafe_allow_html=True,
     )
@@ -370,12 +510,22 @@ else:
 
 # -------------------------------------------------------
 # Budget Rescue
+#
+# The budget the rescue algorithms target is "what's left of this
+# week's budget", not the full weekly budget — otherwise a user who
+# already spent €30 of a €40 weekly budget wouldn't get rescued until
+# their cart hit €40, by which point they'd already be €30 over.
 # -------------------------------------------------------
-if total > user.weekly_budget and user.weekly_budget > 0:
+_rescue_budget = max(0.0, user.weekly_budget - _already_spent_this_week)
+
+if cart_total > _rescue_budget and user.weekly_budget > 0:
     st.divider()
     st.markdown("### 💡 Budget Rescue")
-    over = total - user.weekly_budget
-    st.warning(f"You're **€{over:.2f}** over your weekly budget.")
+    over = cart_total - _rescue_budget
+    st.warning(
+        f"You're **€{over:.2f}** over what's left of your weekly budget "
+        f"(**€{_rescue_budget:.2f}** remaining)."
+    )
 
     mode = st.radio(
         "Strategy:",
@@ -385,10 +535,10 @@ if total > user.weekly_budget and user.weekly_budget > 0:
 
     dicts = cart.to_session_dicts()
     if mode.startswith("⚡"):
-        result = greedy_fit(dicts, user.weekly_budget)
+        result = greedy_fit(dicts, _rescue_budget)
         st.caption("Uses a max-heap to greedily remove the most expensive items — O(n log n).")
     else:
-        result = knapsack_fit(dicts, user.weekly_budget)
+        result = knapsack_fit(dicts, _rescue_budget)
         st.caption("0/1 Knapsack DP — finds the optimal subset that fits the budget — O(n·W).")
 
     colK, colD = st.columns(2)
@@ -465,6 +615,9 @@ def _confirm_end_session():
             directory=get_item_directory(),
         )
         cart.clear()
+        # Saved session changes the user's "most-bought" stats — drop
+        # the cache so the quick-add chips refresh on next render.
+        st.session_state.pop("top_items", None)
         st.session_state.session_just_saved = (final_total, final_store)
         st.rerun()
 

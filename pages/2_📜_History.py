@@ -11,7 +11,7 @@ import streamlit as st
 from datetime import datetime
 
 import database as db
-from state import init_state, require_login, render_sidebar
+from state import init_state, require_login, render_sidebar, render_budget_meter
 from theme import apply_theme
 from algorithms.sorting import merge_sort
 
@@ -21,6 +21,7 @@ apply_theme()
 init_state()
 user = require_login()
 render_sidebar(user)
+render_budget_meter(user)
 
 
 # Per-supermarket visual identity. Each store gets a distinct emoji

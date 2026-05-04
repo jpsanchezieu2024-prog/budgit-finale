@@ -18,7 +18,10 @@ Two sections:
 import streamlit as st
 
 import database as db
-from state import init_state, require_login, get_item_directory, SUPERMARKETS, render_sidebar
+from state import (
+    init_state, require_login, get_item_directory, SUPERMARKETS,
+    render_sidebar, render_budget_meter,
+)
 from theme import apply_theme, PRIMARY
 from algorithms.leaderboard import rank_savers, display_name
 
@@ -28,6 +31,7 @@ apply_theme()
 init_state()
 user = require_login()
 render_sidebar(user)
+render_budget_meter(user)
 
 st.markdown("### 📊 Price comparison")
 
