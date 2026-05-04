@@ -238,7 +238,6 @@ with st.form("add_item", clear_on_submit=True):
         # combined "name OR price" error which read as "negative"
         # when it was really just a 0.0-default price field.
         clean_name = name_in.strip() if name_in else ""
-        clean_brand = (brand_in or "").strip()
         try:
             clean_price = float(price_in or 0.0)
         except (TypeError, ValueError):
@@ -258,7 +257,6 @@ with st.form("add_item", clear_on_submit=True):
                 cart.update(
                     clean_name, price=clean_price,
                     qty=existing.qty + int(qty_in),
-                    brand=clean_brand,
                 )
                 st.toast(
                     f"Updated {clean_name.title()} — now "
@@ -266,28 +264,16 @@ with st.form("add_item", clear_on_submit=True):
                     icon="✏️",
                 )
             else:
-                cart.add(
-                    clean_name, clean_price, int(qty_in),
-                    brand=clean_brand,
-                )
+                cart.add(clean_name, clean_price, int(qty_in))
                 st.toast(
                     f"Added {clean_name.title()} — €{clean_price:.2f}",
                     icon="🛍️",
                 )
 
-            # Save to user's price memory and the global directory,
-            # carrying the brand alongside the price so different
-            # variants of the same product can be told apart.
-            db.upsert_product(
-                user.id, clean_name, clean_price, store,
-                brand=clean_brand,
-            )
-            db.add_to_directory(
-                clean_name, clean_price, store, brand=clean_brand,
-            )
-            update_directory_in_memory(
-                clean_name, clean_price, store, brand=clean_brand,
-            )
+            # Save to user's price memory and the global directory.
+            db.upsert_product(user.id, clean_name, clean_price, store)
+            db.add_to_directory(clean_name, clean_price, store)
+            update_directory_in_memory(clean_name, clean_price, store)
             rebuild_bst(user.id)
 
             st.session_state.last_typed_name = clean_name
@@ -318,54 +304,45 @@ if typed:
     if clean:
         st.caption("📂 From your history: " + ", ".join(clean))
 
-    # Pull full variant info per store so we can show the brand chip
-    # underneath each store's price. Comparison is by absolute price;
-    # the per-unit math was rolled back as too complex for the form.
-    full_entries = lookup_directory_full(typed)
-    if full_entries:
-        ranked = sorted(full_entries.items(), key=lambda kv: kv[1]["price"])
-        cheapest_store, cheapest_entry = ranked[0]
-        current_entry = full_entries.get(store)
+    # Pull the full {store: price} map for this product and rank by
+    # absolute price. Cheapest gets a 👑, the user's current store is
+    # bolded, and a "Save €X by going to Y" line appears when there's
+    # a meaningfully cheaper alternative.
+    all_prices = lookup_in_directory(typed)
+    if all_prices:
+        sorted_prices = sorted(all_prices.items(), key=lambda kv: kv[1])
+        cheapest_store, cheapest_price = sorted_prices[0]
+        current_price = all_prices.get(store)
 
-        # Render each store as a chip — green crown on the cheapest,
-        # bold "(here)" on the user's current store, dim grey for
-        # everything else. Brand is shown as a secondary line under
-        # the price when the directory has it.
         chip_html = []
-        for s_name, entry in ranked:
-            sub = (
-                f"<div style='font-size:0.72rem; color:#7FB5A0;'>{entry['brand']}</div>"
-                if entry.get("brand") else ""
-            )
-            if s_name == cheapest_store and len(ranked) > 1:
+        for s_name, p in sorted_prices:
+            if s_name == cheapest_store and len(sorted_prices) > 1:
                 chip_html.append(
-                    f"<div style='display:inline-block; margin:0 10px 4px 0; color:#40B391; font-weight:700;'>"
-                    f"👑 {s_name} €{entry['price']:.2f}{sub}</div>"
+                    f"<span style='color:#40B391; font-weight:700; margin-right:10px;'>"
+                    f"👑 {s_name} €{p:.2f}</span>"
                 )
             elif s_name == store:
                 chip_html.append(
-                    f"<div style='display:inline-block; margin:0 10px 4px 0; color:#E8F5EF; font-weight:600;'>"
-                    f"{s_name} €{entry['price']:.2f} (here){sub}</div>"
+                    f"<span style='color:#E8F5EF; font-weight:600; margin-right:10px;'>"
+                    f"{s_name} €{p:.2f} (here)</span>"
                 )
             else:
                 chip_html.append(
-                    f"<div style='display:inline-block; margin:0 10px 4px 0; color:#7FB5A0;'>"
-                    f"{s_name} €{entry['price']:.2f}{sub}</div>"
+                    f"<span style='color:#7FB5A0; margin-right:10px;'>"
+                    f"{s_name} €{p:.2f}</span>"
                 )
 
         savings_msg = ""
-        if (
-            current_entry is not None
-            and cheapest_store != store
-            and current_entry["price"] > cheapest_entry["price"]
-        ):
-            savings = current_entry["price"] - cheapest_entry["price"]
+        if (current_price is not None
+                and cheapest_store != store
+                and current_price > cheapest_price):
+            savings = current_price - cheapest_price
             savings_msg = (
                 f"<div style='color:#FFB84D; font-size:0.82rem; margin-top:0.4rem;'>"
                 f"💡 Save <b>€{savings:.2f}</b> by going to {cheapest_store}"
                 f"</div>"
             )
-        elif current_entry is None and len(ranked) >= 1:
+        elif current_price is None and len(sorted_prices) >= 1:
             savings_msg = (
                 f"<div style='color:#7FB5A0; font-size:0.78rem; margin-top:0.25rem;'>"
                 f"No price on file for this item at {store}."
@@ -377,8 +354,7 @@ if typed:
             f"border:1px solid #2A3D34; border-radius:10px; "
             f"padding:0.5rem 0.8rem; margin-top:0.4rem; "
             f"font-size:0.85rem;'>"
-            f"🌍 " + "".join(chip_html) +
-            f"{savings_msg}"
+            f"🌍 " + "".join(chip_html) + savings_msg +
             f"</div>",
             unsafe_allow_html=True,
         )
@@ -546,19 +522,9 @@ if len(cart) == 0:
 else:
     for item in list(cart):
         c1, c2, c3, c4, c5 = st.columns([3, 1.2, 1, 1.2, 0.8])
-
-        # Brand renders as a secondary line under the item name when
-        # the user actually filled it in; otherwise the row stays
-        # exactly as it was before brands existed.
-        brand_line = (
-            f"<span style='color:#7FB5A0; font-size:0.78rem;'>{item.brand}</span><br>"
-            if item.brand else ""
-        )
-
         c1.markdown(
             f"<div style='padding-top:0.6rem;'>"
             f"<b>{item.name.title()}</b><br>"
-            f"{brand_line}"
             f"<span style='color:#7FB5A0; font-size:0.82rem;'>€{item.price:.2f} × {item.qty}</span>"
             f"</div>",
             unsafe_allow_html=True,
@@ -576,15 +542,9 @@ else:
                                     format="%.2f")
         if new_qty != item.qty or abs(new_price - item.price) > 0.001:
             cart.update(item.name, price=new_price, qty=new_qty)
-            db.upsert_product(
-                user.id, item.name, new_price, store, brand=item.brand,
-            )
-            db.add_to_directory(
-                item.name, new_price, store, brand=item.brand,
-            )
-            update_directory_in_memory(
-                item.name, new_price, store, brand=item.brand,
-            )
+            db.upsert_product(user.id, item.name, new_price, store)
+            db.add_to_directory(item.name, new_price, store)
+            update_directory_in_memory(item.name, new_price, store)
             st.rerun()
 
         if c5.button("❌", key=f"{key_base}_rm", help="Remove item"):
