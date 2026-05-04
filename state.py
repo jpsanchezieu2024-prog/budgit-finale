@@ -169,38 +169,28 @@ def render_budget_meter(user) -> None:
 
     streak = compute_streak(user.id, user.weekly_budget)
     streak_chip = (
-        f"<span style='background:rgba(255,107,91,0.18);"
-        f" border:1px solid #FF6B5B; color:#FF8A70;"
-        f" border-radius:999px; padding:2px 10px; font-size:0.78rem;"
-        f" font-weight:700; margin-right:0.5rem;'>🔥 {streak}</span>"
+        f"<span style='background:rgba(255,107,91,0.18); border:1px solid #FF6B5B; color:#FF8A70; border-radius:999px; padding:2px 10px; font-size:0.78rem; font-weight:700; margin-right:0.5rem;'>🔥 {streak}</span>"
         if streak > 0 else ""
     )
 
-    st.markdown(
-        f"""
-        <div style="
-            background: linear-gradient(90deg, {color}26, transparent 70%);
-            border-left: 4px solid {color};
-            border-radius: 0 8px 8px 0;
-            padding: 0.55rem 1rem;
-            margin: 0 0 1rem 0;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            font-size: 0.92rem;
-        ">
-          <span style="color:#7FB5A0;">Remaining this week</span>
-          <span>
-            {streak_chip}
-            <b style="color:{color}; font-size:1.15rem;">€{remaining:,.2f}</b>
-            <span style="color:#7FB5A0; font-size:0.78rem; margin-left:0.6rem;">
-              · {days} day{'s' if days != 1 else ''} left
-            </span>
-          </span>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    days_label = f"{days} day{'s' if days != 1 else ''} left"
+
+    # Built as one continuous line because Streamlit's markdown
+    # parser interprets multi-line strings with leading whitespace as
+    # code blocks and ends up rendering the HTML as plain text.
+    bar_html = (
+        f"<div style='background: linear-gradient(90deg, {color}26, transparent 70%);"
+        f" border-left: 4px solid {color}; border-radius: 0 8px 8px 0;"
+        f" padding: 0.55rem 1rem; margin: 0 0 1rem 0;"
+        f" display: flex; justify-content: space-between; align-items: center;"
+        f" font-size: 0.92rem;'>"
+        f"<span style='color:#7FB5A0;'>Remaining this week</span>"
+        f"<span>{streak_chip}"
+        f"<b style='color:{color}; font-size:1.15rem;'>€{remaining:,.2f}</b>"
+        f"<span style='color:#7FB5A0; font-size:0.78rem; margin-left:0.6rem;'>· {days_label}</span>"
+        f"</span></div>"
     )
+    st.markdown(bar_html, unsafe_allow_html=True)
 
 
 def get_top_items_cached(user_id: str, limit: int = 6) -> list[tuple]:
@@ -263,24 +253,18 @@ def _normalise_entry(entry) -> dict:
     """
     Turn whatever a directory store entry currently looks like into
     the canonical dict shape:
-        {"price": float, "size_value": float, "size_unit": str, "brand": str}
+        {"price": float, "brand": str}
 
-    Old entries (from before variants existed) were just a number; we
-    treat those as size=1 unit, no brand. New entries are already a
-    dict with the four fields.
+    Old entries (from before brand was tracked) were just a number; we
+    treat those as having no brand. Entries that still have legacy
+    `size_value`/`size_unit` keys (from a previous iteration of the
+    schema) are ignored — those fields are no longer used.
     """
     if isinstance(entry, (int, float)):
-        return {
-            "price": float(entry),
-            "size_value": 1.0,
-            "size_unit": "unit",
-            "brand": "",
-        }
+        return {"price": float(entry), "brand": ""}
     return {
-        "price":      float(entry.get("price", 0.0)),
-        "size_value": float(entry.get("size_value", 1.0)),
-        "size_unit":  entry.get("size_unit", "unit"),
-        "brand":      entry.get("brand", ""),
+        "price": float(entry.get("price", 0.0)),
+        "brand": entry.get("brand", ""),
     }
 
 
@@ -326,8 +310,6 @@ def lookup_directory_full(name: str, supermarket: str = None):
 
 
 def update_directory_in_memory(name: str, price: float, supermarket: str,
-                               size_value: float = 1.0,
-                               size_unit: str = "unit",
                                brand: str = "") -> None:
     """
     After adding an item, mirror the change in the in-memory directory
@@ -339,10 +321,8 @@ def update_directory_in_memory(name: str, price: float, supermarket: str,
     existing = ht.get(key)
 
     new_entry = {
-        "price":      round(float(price), 2),
-        "size_value": float(size_value),
-        "size_unit":  size_unit,
-        "brand":      brand,
+        "price": round(float(price), 2),
+        "brand": brand,
     }
     if existing:
         existing["prices"][supermarket] = new_entry

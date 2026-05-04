@@ -42,7 +42,14 @@ def compute_session_savings(items: list[dict], directory) -> tuple[float, float]
         if len(prices) < 2:
             continue
 
-        ceiling = max(prices.values())
+        # Each store entry can be either a plain float (legacy format
+        # from before variants existed) or a dict {price, size_value,
+        # size_unit, brand} (current format). Extract just the price.
+        price_values = [
+            float(p["price"]) if isinstance(p, dict) else float(p)
+            for p in prices.values()
+        ]
+        ceiling = max(price_values)
         if ceiling < paid:
             # The user paid more than any recorded price elsewhere no
             # savings on this line so the baseline is the price they paid

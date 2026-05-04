@@ -19,9 +19,6 @@ from state import (
 )
 from theme import apply_theme, budget_pill
 from algorithms.greedy import greedy_fit, knapsack_fit
-from algorithms.units import (
-    UNIT_OPTIONS, format_size, format_price_per_unit, price_per_base_unit,
-)
 
 
 st.set_page_config(page_title="Budgit — Shop", page_icon="🛒", layout="centered")
@@ -197,38 +194,27 @@ if "last_typed_name" not in st.session_state:
     st.session_state.last_typed_name = ""
 
 with st.form("add_item", clear_on_submit=True):
-    # Row 1: Name and Brand (brand is optional and lets users separate
-    # variants of the same item — Pascual milk vs Lidl-brand milk).
-    row1_col_name, row1_col_brand = st.columns([2, 1])
-    with row1_col_name:
+    # Row 1: Name + optional Brand. Brand lets users distinguish
+    # variants (Pascual milk vs Lidl milk) without forcing them to
+    # think about it — most users will just leave it blank.
+    name_col, brand_col = st.columns([2, 1])
+    with name_col:
         name_in = st.text_input(
             "Product name",
             placeholder="e.g. milk, bread, eggs",
             key="item_name",
         )
-    with row1_col_brand:
+    with brand_col:
         brand_in = st.text_input(
             "Brand (optional)",
             placeholder="e.g. Pascual",
             key="add_item_brand",
         )
 
-    # Row 2: Size + Unit + Price + Qty + Submit.
-    # Size+Unit default to 1+unit so items the user doesn't care about
-    # weighing (e.g. "eggs", "loaf of bread") just behave like before.
-    row2_size, row2_unit, row2_price, row2_qty = st.columns([1, 1, 1.4, 0.9])
+    # Row 2: Price + Qty + Submit.
+    price_col, qty_col = st.columns([1.5, 1])
 
-    with row2_size:
-        size_in = st.number_input(
-            "Size", min_value=0.01, value=1.0, step=0.5,
-            key="add_item_size", format="%.2f",
-        )
-    with row2_unit:
-        unit_in = st.selectbox(
-            "Unit", UNIT_OPTIONS, index=0, key="add_item_unit",
-        )
-
-    with row2_price:
+    with price_col:
         # Autofill: check user's own memory first, then global
         # directory. Always clamped to >= 0 so the number_input's
         # min_value constraint can't be violated by stale or weird
@@ -250,7 +236,7 @@ with st.form("add_item", clear_on_submit=True):
             key="add_item_price",
         )
 
-    with row2_qty:
+    with qty_col:
         qty_in = st.number_input("Qty", min_value=1, value=1, step=1,
                                  key="add_item_qty")
 
@@ -269,10 +255,6 @@ with st.form("add_item", clear_on_submit=True):
             clean_price = float(price_in or 0.0)
         except (TypeError, ValueError):
             clean_price = 0.0
-        try:
-            clean_size = float(size_in or 1.0)
-        except (TypeError, ValueError):
-            clean_size = 1.0
 
         if not clean_name:
             st.error("Please enter a product name.")
@@ -288,7 +270,6 @@ with st.form("add_item", clear_on_submit=True):
                 cart.update(
                     clean_name, price=clean_price,
                     qty=existing.qty + int(qty_in),
-                    size_value=clean_size, size_unit=unit_in,
                     brand=clean_brand,
                 )
                 st.toast(
@@ -299,7 +280,6 @@ with st.form("add_item", clear_on_submit=True):
             else:
                 cart.add(
                     clean_name, clean_price, int(qty_in),
-                    size_value=clean_size, size_unit=unit_in,
                     brand=clean_brand,
                 )
                 st.toast(
@@ -307,19 +287,18 @@ with st.form("add_item", clear_on_submit=True):
                     icon="🛍️",
                 )
 
-            # Save to user's price memory and global directory,
-            # including the variant info (brand + size + unit).
+            # Save to user's price memory and the global directory,
+            # carrying the brand alongside the price so different
+            # variants of the same product can be told apart.
             db.upsert_product(
                 user.id, clean_name, clean_price, store,
-                size_value=clean_size, size_unit=unit_in, brand=clean_brand,
+                brand=clean_brand,
             )
             db.add_to_directory(
-                clean_name, clean_price, store,
-                size_value=clean_size, size_unit=unit_in, brand=clean_brand,
+                clean_name, clean_price, store, brand=clean_brand,
             )
             update_directory_in_memory(
-                clean_name, clean_price, store,
-                size_value=clean_size, size_unit=unit_in, brand=clean_brand,
+                clean_name, clean_price, store, brand=clean_brand,
             )
             rebuild_bst(user.id)
 
@@ -351,101 +330,56 @@ if typed:
     if clean:
         st.caption("📂 From your history: " + ", ".join(clean))
 
-    # Pull the FULL variant info per store (price + size + unit + brand)
-    # so we can rank by price-per-base-unit, not just absolute price.
+    # Pull full variant info per store so we can show the brand chip
+    # underneath each store's price. Comparison is by absolute price;
+    # the per-unit math was rolled back as too complex for the form.
     full_entries = lookup_directory_full(typed)
     if full_entries:
-        # Compute (store, entry, ppu_base, ppu_value) tuples.
-        ranked = []
-        for s_name, entry in full_entries.items():
-            base, ppu = price_per_base_unit(
-                entry["price"], entry["size_value"], entry["size_unit"],
-            )
-            ranked.append((s_name, entry, base, ppu))
-        # Rank by price-per-base-unit (lowest first). When sizes match
-        # this is identical to ranking by price; when they differ it's
-        # the fairer comparison.
-        ranked.sort(key=lambda r: r[3])
-        cheapest_store, cheapest_entry, cheapest_base, cheapest_ppu = ranked[0]
+        ranked = sorted(full_entries.items(), key=lambda kv: kv[1]["price"])
+        cheapest_store, cheapest_entry = ranked[0]
         current_entry = full_entries.get(store)
 
-        # Render each store as a coloured chip showing absolute price
-        # and (when meaningfully different) price per base unit.
+        # Render each store as a chip — green crown on the cheapest,
+        # bold "(here)" on the user's current store, dim grey for
+        # everything else. Brand is shown as a secondary line under
+        # the price when the directory has it.
         chip_html = []
-        for s_name, entry, base, ppu in ranked:
-            size_label = format_size(entry["size_value"], entry["size_unit"])
-            ppu_label = format_price_per_unit(
-                entry["price"], entry["size_value"], entry["size_unit"]
+        for s_name, entry in ranked:
+            sub = (
+                f"<div style='font-size:0.72rem; color:#7FB5A0;'>{entry['brand']}</div>"
+                if entry.get("brand") else ""
             )
-            sub_text = ""
-            if size_label or entry["brand"]:
-                bits = []
-                if entry["brand"]:
-                    bits.append(entry["brand"])
-                if size_label:
-                    bits.append(size_label)
-                if ppu_label:
-                    bits.append(ppu_label)
-                sub_text = (
-                    f"<div style='font-size:0.72rem; color:#7FB5A0;'>"
-                    f"{' · '.join(bits)}</div>"
-                )
-
             if s_name == cheapest_store and len(ranked) > 1:
                 chip_html.append(
-                    f"<div style='display:inline-block; margin:0 6px 4px 0;"
-                    f" color:#40B391; font-weight:700;'>"
-                    f"👑 {s_name} €{entry['price']:.2f}{sub_text}</div>"
+                    f"<div style='display:inline-block; margin:0 10px 4px 0; color:#40B391; font-weight:700;'>"
+                    f"👑 {s_name} €{entry['price']:.2f}{sub}</div>"
                 )
             elif s_name == store:
                 chip_html.append(
-                    f"<div style='display:inline-block; margin:0 6px 4px 0;"
-                    f" color:#E8F5EF; font-weight:600;'>"
-                    f"{s_name} €{entry['price']:.2f} (here){sub_text}</div>"
+                    f"<div style='display:inline-block; margin:0 10px 4px 0; color:#E8F5EF; font-weight:600;'>"
+                    f"{s_name} €{entry['price']:.2f} (here){sub}</div>"
                 )
             else:
                 chip_html.append(
-                    f"<div style='display:inline-block; margin:0 6px 4px 0;"
-                    f" color:#7FB5A0;'>"
-                    f"{s_name} €{entry['price']:.2f}{sub_text}</div>"
+                    f"<div style='display:inline-block; margin:0 10px 4px 0; color:#7FB5A0;'>"
+                    f"{s_name} €{entry['price']:.2f}{sub}</div>"
                 )
 
-        # Highlight savings if there's a cheaper alternative to the
-        # current store. Compute on a per-base-unit basis so a "1L for
-        # €1.20 here vs 0.5L for €0.50 elsewhere" comparison is honest
-        # (€1.20/L vs €1.00/L → €0.20/L savings, which we then scale
-        # to the size the user is actually buying — `current_entry`).
         savings_msg = ""
-        if current_entry is not None and cheapest_store != store:
-            _, current_ppu = price_per_base_unit(
-                current_entry["price"],
-                current_entry["size_value"],
-                current_entry["size_unit"],
+        if (
+            current_entry is not None
+            and cheapest_store != store
+            and current_entry["price"] > cheapest_entry["price"]
+        ):
+            savings = current_entry["price"] - cheapest_entry["price"]
+            savings_msg = (
+                f"<div style='color:#FFB84D; font-size:0.82rem; margin-top:0.4rem;'>"
+                f"💡 Save <b>€{savings:.2f}</b> by going to {cheapest_store}"
+                f"</div>"
             )
-            if current_ppu > cheapest_ppu:
-                savings_per_base = current_ppu - cheapest_ppu
-                # Scale to the current store's package size to give
-                # the user a tangible "you'd save €X" number.
-                _, current_in_base = (
-                    cheapest_base,
-                    current_entry["size_value"]
-                    * (0.001 if current_entry["size_unit"] in ("g", "ml")
-                       else 1.0),
-                )
-                tangible = savings_per_base * max(current_in_base, 1.0)
-                savings_msg = (
-                    f"<div style='color:#FFB84D; font-size:0.82rem; "
-                    f"margin-top:0.4rem;'>"
-                    f"💡 Save ~<b>€{tangible:.2f}</b> per package by going to "
-                    f"<b>{cheapest_store}</b> "
-                    f"(€{cheapest_ppu:.2f}/{cheapest_base} vs "
-                    f"€{current_ppu:.2f}/{cheapest_base})"
-                    f"</div>"
-                )
         elif current_entry is None and len(ranked) >= 1:
             savings_msg = (
-                f"<div style='color:#7FB5A0; font-size:0.78rem; "
-                f"margin-top:0.25rem;'>"
+                f"<div style='color:#7FB5A0; font-size:0.78rem; margin-top:0.25rem;'>"
                 f"No price on file for this item at {store}."
                 f"</div>"
             )
@@ -625,34 +559,19 @@ else:
     for item in list(cart):
         c1, c2, c3, c4, c5 = st.columns([3, 1.2, 1, 1.2, 0.8])
 
-        # Build the secondary info line that shows brand + size + €/unit
-        # only when the user actually filled them in. For default
-        # (1 unit, no brand) entries the line stays minimal.
-        size_lbl = format_size(item.size_value, item.size_unit)
-        ppu_lbl  = format_price_per_unit(item.price, item.size_value, item.size_unit)
-        meta_bits = []
-        if item.brand:
-            meta_bits.append(item.brand)
-        if size_lbl:
-            meta_bits.append(size_lbl)
-        meta_line = (
-            f"<span style='color:#7FB5A0; font-size:0.78rem;'>"
-            f"{' · '.join(meta_bits)}</span><br>"
-            if meta_bits else ""
-        )
-        ppu_line = (
-            f"<span style='color:#40B391; font-size:0.74rem;'>{ppu_lbl}</span>"
-            if ppu_lbl else ""
+        # Brand renders as a secondary line under the item name when
+        # the user actually filled it in; otherwise the row stays
+        # exactly as it was before brands existed.
+        brand_line = (
+            f"<span style='color:#7FB5A0; font-size:0.78rem;'>{item.brand}</span><br>"
+            if item.brand else ""
         )
 
         c1.markdown(
             f"<div style='padding-top:0.6rem;'>"
             f"<b>{item.name.title()}</b><br>"
-            f"{meta_line}"
-            f"<span style='color:#7FB5A0; font-size:0.82rem;'>"
-            f"€{item.price:.2f} × {item.qty}"
-            f"{' · ' + ppu_lbl if ppu_lbl else ''}"
-            f"</span>"
+            f"{brand_line}"
+            f"<span style='color:#7FB5A0; font-size:0.82rem;'>€{item.price:.2f} × {item.qty}</span>"
             f"</div>",
             unsafe_allow_html=True,
         )
@@ -670,19 +589,13 @@ else:
         if new_qty != item.qty or abs(new_price - item.price) > 0.001:
             cart.update(item.name, price=new_price, qty=new_qty)
             db.upsert_product(
-                user.id, item.name, new_price, store,
-                size_value=item.size_value, size_unit=item.size_unit,
-                brand=item.brand,
+                user.id, item.name, new_price, store, brand=item.brand,
             )
             db.add_to_directory(
-                item.name, new_price, store,
-                size_value=item.size_value, size_unit=item.size_unit,
-                brand=item.brand,
+                item.name, new_price, store, brand=item.brand,
             )
             update_directory_in_memory(
-                item.name, new_price, store,
-                size_value=item.size_value, size_unit=item.size_unit,
-                brand=item.brand,
+                item.name, new_price, store, brand=item.brand,
             )
             st.rerun()
 

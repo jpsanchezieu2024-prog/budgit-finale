@@ -55,17 +55,18 @@ class CartItem:
     """
     A single line in the shopping cart.
 
-    `size_value` + `size_unit` describe the package size (e.g. 1 L,
-    500 g) and `brand` lets users separate variants of the same item
-    (Pascual milk vs Lidl-brand milk). All three default to the
-    no-op value (1 unit, no brand) so existing flows that don't care
-    about variants behave identically to before.
+    `brand` lets users distinguish variants of the same item (Pascual
+    milk vs Lidl-brand milk). It defaults to "" so existing flows that
+    don't care about brand behave identically to before.
+
+    Note: earlier iterations also tracked `size_value` + `size_unit`
+    for per-kg / per-L comparisons. That added too much friction to
+    the Add Item form for most users and was rolled back; only `brand`
+    survives.
     """
     name: str
     price: float
     qty: int = 1
-    size_value: float = 1.0
-    size_unit: str = "unit"
     brand: str = ""
 
     @property
@@ -77,8 +78,6 @@ class CartItem:
             "name": self.name,
             "price": self.price,
             "qty": self.qty,
-            "size_value": self.size_value,
-            "size_unit": self.size_unit,
             "brand": self.brand,
         }
 
@@ -97,22 +96,17 @@ class Cart:
 
     # --- mutators -----------------------------------------------------
     def add(self, name: str, price: float, qty: int = 1,
-            size_value: float = 1.0, size_unit: str = "unit",
             brand: str = "") -> None:
         key = name.lower().strip()
         existing: CartItem | None = self._items.get(key)
         if existing is not None:
             existing.qty += qty
             existing.price = price                # last seen price wins
-            existing.size_value = float(size_value)
-            existing.size_unit = size_unit
             existing.brand = brand
             self._items.put(key, existing)
         else:
             self._items.put(key, CartItem(
-                name=name.strip(), price=price, qty=qty,
-                size_value=float(size_value), size_unit=size_unit,
-                brand=brand,
+                name=name.strip(), price=price, qty=qty, brand=brand,
             ))
             self._order.append(key)
 
@@ -123,8 +117,6 @@ class Cart:
 
     def update(self, name: str, *, price: float | None = None,
                qty: int | None = None,
-               size_value: float | None = None,
-               size_unit: str | None = None,
                brand: str | None = None) -> None:
         key = name.lower().strip()
         item: CartItem | None = self._items.get(key)
@@ -134,10 +126,6 @@ class Cart:
             item.price = float(price)
         if qty is not None:
             item.qty = max(1, int(qty))
-        if size_value is not None:
-            item.size_value = float(size_value)
-        if size_unit is not None:
-            item.size_unit = size_unit
         if brand is not None:
             item.brand = brand
         self._items.put(key, item)

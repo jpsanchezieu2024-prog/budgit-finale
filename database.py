@@ -160,17 +160,18 @@ def update_user_profile(user_id, weekly_budget=None, preferred_store=None, name=
 # -------------------------------------------------------
 # PRODUCT functions (per-user price memory)
 # -------------------------------------------------------
-def upsert_product(user_id, name, price, supermarket,
-                   size_value: float = 1.0, size_unit: str = "unit",
-                   brand: str = ""):
+def upsert_product(user_id, name, price, supermarket, brand: str = ""):
+    """
+    Persist (or update) the user's last paid price for an item at a
+    given store. `brand` is optional and lets users distinguish
+    variants of the same product (Pascual milk vs Lidl-brand milk).
+    """
     doc_id = f"{user_id}_{name.lower().strip()}_{supermarket}"
     db.collection("products").document(doc_id).set({
         "user_id": user_id,
         "name": name.lower().strip(),
         "price": float(price),
         "supermarket": supermarket,
-        "size_value": float(size_value),
-        "size_unit": size_unit,
         "brand": brand,
         "updated_at": datetime.utcnow().isoformat(),
     })
@@ -207,23 +208,22 @@ def get_all_products(user_id):
 # the latest price anyone paid for milk at Mercadona.
 # -------------------------------------------------------
 def add_to_directory(name: str, price: float, supermarket: str,
-                     size_value: float = 1.0, size_unit: str = "unit",
                      brand: str = ""):
     """
     Update the global directory with the latest price for this product
     at this supermarket.
 
-    Each store entry is stored as a dict so we can carry size + brand
+    Each store entry is stored as a dict so we can carry the brand
     alongside the price:
 
         prices = {
-          "Mercadona": {"price": 0.89, "size_value": 1, "size_unit": "L", "brand": "Pascual"},
-          "Lidl":      {"price": 0.50, "size_value": 0.5, "size_unit": "L", "brand": "Milbona"},
+          "Mercadona": {"price": 0.89, "brand": "Pascual"},
+          "Lidl":      {"price": 0.50, "brand": "Milbona"},
         }
 
     Old entries that were just floats (`prices["Mercadona"] = 0.89`)
-    are still readable — the parser in state.py treats them as
-    `size_value=1, size_unit="unit", brand=""`.
+    are still readable — the parser in state.py treats them as having
+    no brand.
     """
     key = name.lower().strip()
     doc_ref = db.collection("item_directory").document(key)
@@ -231,10 +231,8 @@ def add_to_directory(name: str, price: float, supermarket: str,
     now = datetime.utcnow().isoformat()
 
     new_entry = {
-        "price":      round(float(price), 2),
-        "size_value": float(size_value),
-        "size_unit":  size_unit,
-        "brand":      brand,
+        "price": round(float(price), 2),
+        "brand": brand,
     }
 
     if doc.exists:
@@ -290,13 +288,11 @@ def save_session(user_id, supermarket, items, total, directory=None):
     })
     for item in items:
         db.collection("session_items").add({
-            "session_id":  session_ref.id,
-            "name":        item["name"],
-            "price":       float(item["price"]),
-            "qty":         int(item.get("qty", 1)),
-            "size_value":  float(item.get("size_value", 1.0)),
-            "size_unit":   item.get("size_unit", "unit"),
-            "brand":       item.get("brand", ""),
+            "session_id": session_ref.id,
+            "name":       item["name"],
+            "price":      float(item["price"]),
+            "qty":        int(item.get("qty", 1)),
+            "brand":      item.get("brand", ""),
         })
 
     # Update the leaderboard counters for this user.
