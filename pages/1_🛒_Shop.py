@@ -12,8 +12,7 @@ import database as db
 from state import (
     init_state, require_login, SUPERMARKETS,
     get_bst, rebuild_bst, get_item_directory,
-    lookup_in_directory, lookup_directory_full,
-    update_directory_in_memory, load_item_directory,
+    lookup_in_directory, update_directory_in_memory, load_item_directory,
     render_sidebar, render_budget_meter, start_of_current_week,
     get_top_items_cached,
 )
@@ -194,27 +193,16 @@ if "last_typed_name" not in st.session_state:
     st.session_state.last_typed_name = ""
 
 with st.form("add_item", clear_on_submit=True):
-    # Row 1: Name + optional Brand. Brand lets users distinguish
-    # variants (Pascual milk vs Lidl milk) without forcing them to
-    # think about it — most users will just leave it blank.
-    name_col, brand_col = st.columns([2, 1])
-    with name_col:
+    col_name, col_price, col_qty = st.columns([3, 1.2, 1])
+
+    with col_name:
         name_in = st.text_input(
             "Product name",
             placeholder="e.g. milk, bread, eggs",
             key="item_name",
         )
-    with brand_col:
-        brand_in = st.text_input(
-            "Brand (optional)",
-            placeholder="e.g. Pascual",
-            key="add_item_brand",
-        )
 
-    # Row 2: Price + Qty + Submit.
-    price_col, qty_col = st.columns([1.5, 1])
-
-    with price_col:
+    with col_price:
         # Autofill: check user's own memory first, then global
         # directory. Always clamped to >= 0 so the number_input's
         # min_value constraint can't be violated by stale or weird

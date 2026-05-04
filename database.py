@@ -160,19 +160,14 @@ def update_user_profile(user_id, weekly_budget=None, preferred_store=None, name=
 # -------------------------------------------------------
 # PRODUCT functions (per-user price memory)
 # -------------------------------------------------------
-def upsert_product(user_id, name, price, supermarket, brand: str = ""):
-    """
-    Persist (or update) the user's last paid price for an item at a
-    given store. `brand` is optional and lets users distinguish
-    variants of the same product (Pascual milk vs Lidl-brand milk).
-    """
+def upsert_product(user_id, name, price, supermarket):
+    """Persist (or update) the user's last paid price for an item at a given store."""
     doc_id = f"{user_id}_{name.lower().strip()}_{supermarket}"
     db.collection("products").document(doc_id).set({
         "user_id": user_id,
         "name": name.lower().strip(),
         "price": float(price),
         "supermarket": supermarket,
-        "brand": brand,
         "updated_at": datetime.utcnow().isoformat(),
     })
 
@@ -207,38 +202,27 @@ def get_all_products(user_id):
 # This way when someone types "milk" at Mercadona, they get
 # the latest price anyone paid for milk at Mercadona.
 # -------------------------------------------------------
-def add_to_directory(name: str, price: float, supermarket: str,
-                     brand: str = ""):
+def add_to_directory(name: str, price: float, supermarket: str):
     """
     Update the global directory with the latest price for this product
-    at this supermarket.
+    at this supermarket. Each store entry is stored as a plain float
+    keyed by store name:
 
-    Each store entry is stored as a dict so we can carry the brand
-    alongside the price:
+        prices = {"Mercadona": 0.89, "Lidl": 0.75, ...}
 
-        prices = {
-          "Mercadona": {"price": 0.89, "brand": "Pascual"},
-          "Lidl":      {"price": 0.50, "brand": "Milbona"},
-        }
-
-    Old entries that were just floats (`prices["Mercadona"] = 0.89`)
-    are still readable — the parser in state.py treats them as having
-    no brand.
+    A previous schema variant stored entries as dicts with extra
+    metadata; those are normalised back to plain floats on read in
+    `state._normalise_price`.
     """
     key = name.lower().strip()
     doc_ref = db.collection("item_directory").document(key)
     doc = doc_ref.get()
     now = datetime.utcnow().isoformat()
 
-    new_entry = {
-        "price": round(float(price), 2),
-        "brand": brand,
-    }
-
     if doc.exists:
         data = doc.to_dict()
         prices = data.get("prices", {})
-        prices[supermarket] = new_entry
+        prices[supermarket] = round(float(price), 2)
         doc_ref.update({
             "prices": prices,
             "last_updated": now,
@@ -247,7 +231,7 @@ def add_to_directory(name: str, price: float, supermarket: str,
     else:
         doc_ref.set({
             "name": key,
-            "prices": {supermarket: new_entry},
+            "prices": {supermarket: round(float(price), 2)},
             "last_updated": now,
             "times_added": 1,
         })
@@ -292,7 +276,6 @@ def save_session(user_id, supermarket, items, total, directory=None):
             "name":       item["name"],
             "price":      float(item["price"]),
             "qty":        int(item.get("qty", 1)),
-            "brand":      item.get("brand", ""),
         })
 
     # Update the leaderboard counters for this user.

@@ -231,12 +231,21 @@ def load_item_directory() -> HashTable:
         key   -> product name (e.g. "milk")
         value -> { "prices": { "Mercadona": 0.89, "Lidl": 0.75 }, ... }
 
+    Mixed-format documents from a previous schema iteration are
+    flattened back to plain floats during this load, so the in-memory
+    hash table is guaranteed to hold simple `store -> price`
+    mappings — every consumer can multiply/sum without surprises.
+
     Called once on login. All subsequent price lookups are O(1).
     """
     ht = HashTable()
     for item in db.get_full_directory():
+        flat_prices = {
+            s: _normalise_price(e)
+            for s, e in item.get("prices", {}).items()
+        }
         ht.put(item["name"], {
-            "prices": item.get("prices", {}),
+            "prices": flat_prices,
             "times_added": item.get("times_added", 0),
         })
     st.session_state.item_directory_ht = ht
@@ -249,31 +258,27 @@ def get_item_directory() -> HashTable:
     return st.session_state.item_directory_ht
 
 
-def _normalise_entry(entry) -> dict:
+def _normalise_price(entry) -> float:
     """
-    Turn whatever a directory store entry currently looks like into
-    the canonical dict shape:
-        {"price": float, "brand": str}
-
-    Old entries (from before brand was tracked) were just a number; we
-    treat those as having no brand. Entries that still have legacy
-    `size_value`/`size_unit` keys (from a previous iteration of the
-    schema) are ignored — those fields are no longer used.
+    Turn a directory store entry into a plain float price, regardless
+    of the format it was written in. Some Firestore documents from a
+    previous schema iteration still carry per-store dicts like
+    `{"price": 0.89, "brand": "...", ...}`; those collapse to just
+    the price. New writes are plain floats.
     """
     if isinstance(entry, (int, float)):
-        return {"price": float(entry), "brand": ""}
-    return {
-        "price": float(entry.get("price", 0.0)),
-        "brand": entry.get("brand", ""),
-    }
+        return float(entry)
+    if isinstance(entry, dict):
+        return float(entry.get("price", 0.0))
+    return 0.0
 
 
 def lookup_in_directory(name: str, supermarket: str = None):
     """
-    Returns just the price as a float for one store, or a flat
+    Returns the price as a float for one store, or a flat
     {store: price} dict when no store is specified, or None if the
-    item isn't on file. Backwards-compat shape for code that only
-    cares about the headline number.
+    item isn't on file. Always normalises legacy dict entries down
+    to plain floats so callers can multiply / add directly.
     """
     ht = get_item_directory()
     result = ht.get(name.lower().strip())
@@ -282,35 +287,11 @@ def lookup_in_directory(name: str, supermarket: str = None):
     prices = result.get("prices", {})
     if supermarket:
         entry = prices.get(supermarket)
-        if entry is None:
-            return None
-        return _normalise_entry(entry)["price"]
-    return {
-        s: _normalise_entry(e)["price"]
-        for s, e in prices.items()
-    }
+        return _normalise_price(entry) if entry is not None else None
+    return {s: _normalise_price(e) for s, e in prices.items()}
 
 
-def lookup_directory_full(name: str, supermarket: str = None):
-    """
-    Return the full variant info for a product:
-      - When `supermarket` is given: a single dict
-        {price, size_value, size_unit, brand} or None.
-      - Otherwise: {store: {price, size_value, size_unit, brand}}.
-    """
-    ht = get_item_directory()
-    result = ht.get(name.lower().strip())
-    if result is None:
-        return None
-    prices = result.get("prices", {})
-    if supermarket:
-        entry = prices.get(supermarket)
-        return _normalise_entry(entry) if entry is not None else None
-    return {s: _normalise_entry(e) for s, e in prices.items()}
-
-
-def update_directory_in_memory(name: str, price: float, supermarket: str,
-                               brand: str = "") -> None:
+def update_directory_in_memory(name: str, price: float, supermarket: str) -> None:
     """
     After adding an item, mirror the change in the in-memory directory
     so subsequent same-render lookups see the new value without
@@ -319,17 +300,13 @@ def update_directory_in_memory(name: str, price: float, supermarket: str,
     ht = get_item_directory()
     key = name.lower().strip()
     existing = ht.get(key)
-
-    new_entry = {
-        "price": round(float(price), 2),
-        "brand": brand,
-    }
+    new_price = round(float(price), 2)
     if existing:
-        existing["prices"][supermarket] = new_entry
+        existing["prices"][supermarket] = new_price
         existing["times_added"] = existing.get("times_added", 0) + 1
         ht.put(key, existing)
     else:
         ht.put(key, {
-            "prices": {supermarket: new_entry},
+            "prices": {supermarket: new_price},
             "times_added": 1,
         })
