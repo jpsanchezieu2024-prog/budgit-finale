@@ -145,7 +145,9 @@ def _dashboard():
         else:
             return "assets/tree4.png"
 
-    st.image(_tree_image(pct), width=120)
+    col_l, col_c, col_r = st.columns([1, 1, 1])
+    with col_c:
+        st.image(_tree_image(pct), width=120)
 
     st.markdown(
         f"""
