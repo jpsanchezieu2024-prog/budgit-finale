@@ -208,6 +208,16 @@ def apply_theme() -> None:
     st.markdown(CSS, unsafe_allow_html=True)
 
 
+def budget_tree(pct_used: float) -> str:
+    """Emoji showing how healthy the budget looks."""
+    if pct_used < 0.5:
+        return "🌳"
+    if pct_used < 0.8:
+        return "🌴"
+    if pct_used < 1.0:
+        return "🍂"
+    return "🥀"
+
 
 def budget_color(pct_used: float) -> str:
     """

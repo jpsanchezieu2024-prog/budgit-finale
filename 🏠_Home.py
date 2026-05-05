@@ -134,10 +134,22 @@ def _dashboard():
 
     # --- Budget card (remaining changes colour as you eat into the budget) ---
     rem_color = budget_color(pct)
+
+    def _tree_image(pct: float) -> str:
+        if pct < 0.25:
+            return "assets/tree1.png"
+        elif pct < 0.50:
+            return "assets/tree2.png"
+        elif pct < 0.75:
+            return "assets/tree3.png"
+        else:
+            return "assets/tree4.png"
+
+    st.image(_tree_image(pct), width=120)
+
     st.markdown(
         f"""
         <div class="budgit-accent">
-          <div style="font-size:3.5rem; margin-bottom:0.5rem;">{budget_tree(pct)}</div>
           <div style="color:#7FB5A0; font-size:0.95rem; margin-bottom:0.3rem;">Remaining this week</div>
           <p class="budgit-total" style="color:{rem_color} !important;">€{remaining:,.2f}
             <span style="color:#4A7A6A; font-size:1.1rem;"> / €{user.weekly_budget:,.2f}</span>
