@@ -146,7 +146,9 @@ def _dashboard():
             path = "assets/tree3.png"
         else:
             path = "assets/tree4.png"
-        with open(path, "rb") as f:
+        import os
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(base_dir, path), "rb") as f:
             data = base64.b64encode(f.read()).decode()
         return f"data:image/png;base64,{data}"
 
@@ -154,15 +156,14 @@ def _dashboard():
         f"""
         <div class="budgit-accent">
           <div style="text-align:center; margin-bottom:0.8rem;">
-            <img src="app/static/tree{1 if pct < 0.25 else 2 if pct < 0.50 else 3 if pct < 0.75 else 4}.png" 
-                 width="120" style="pointer-events:none; user-select:none;">
+            <img src="{_tree_image(pct)}" width="120" style="pointer-events:none; user-select:none;">
           </div>
           <div style="color:#7FB5A0; font-size:0.95rem; margin-bottom:0.3rem;">Remaining this week</div>
           <p class="budgit-total" style="color:{rem_color} !important;">€{remaining:,.2f}
             <span style="color:#4A7A6A; font-size:1.1rem;"> / €{user.weekly_budget:,.2f}</span>
           </p>
           <div style="margin: 0.5rem 0;">{budget_pill(pct)}</div>
-          <div class="budgit-total-label">{min(pct,1.0)*100:.0f}% of weekly budget used</div>
+          <div class="budgit-total-label">{min(pct, 1.0) * 100:.0f}% of weekly budget used</div>
         </div>
         """,
         unsafe_allow_html=True,
