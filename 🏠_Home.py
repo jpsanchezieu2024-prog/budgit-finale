@@ -135,15 +135,20 @@ def _dashboard():
     # --- Budget card (remaining changes colour as you eat into the budget) ---
     rem_color = budget_color(pct)
 
+    import base64
+
     def _tree_image(pct: float) -> str:
         if pct < 0.25:
-            return "assets/tree1.png"
+            path = "assets/tree1.png"
         elif pct < 0.50:
-            return "assets/tree2.png"
+            path = "assets/tree2.png"
         elif pct < 0.75:
-            return "assets/tree3.png"
+            path = "assets/tree3.png"
         else:
-            return "assets/tree4.png"
+            path = "assets/tree4.png"
+        with open(path, "rb") as f:
+            data = base64.b64encode(f.read()).decode()
+        return f"data:image/png;base64,{data}"
 
     st.markdown(
         f"""
