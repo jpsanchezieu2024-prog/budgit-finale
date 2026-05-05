@@ -17,7 +17,7 @@ from state import (
     rebuild_bst, load_item_directory, render_sidebar,
     start_of_current_week, days_left_in_week,
 )
-from theme import apply_theme, budget_tree, budget_pill, budget_advice, budget_color
+from theme import apply_theme, budget_pill, budget_advice, budget_color
 
 
 # Keys that belong to the *previous* user and must never leak into the
