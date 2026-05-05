@@ -139,13 +139,13 @@ def _dashboard():
 
     def _tree_image(pct: float) -> str:
         if pct < 0.25:
-            path = "static/tree1.png"
+            path = "assets/tree1.png"
         elif pct < 0.50:
-            path = "static/tree2.png"
+            path = "assets/tree2.png"
         elif pct < 0.75:
-            path = "static/tree3.png"
+            path = "assets/tree3.png"
         else:
-            path = "static/tree4.png"
+            path = "assets/tree4.png"
         with open(path, "rb") as f:
             data = base64.b64encode(f.read()).decode()
         return f"data:image/png;base64,{data}"
