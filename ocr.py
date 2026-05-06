@@ -109,50 +109,95 @@ _PRICE_RE = re.compile(
 
 def parse_receipt_lines(raw_text: str) -> list[dict]:
     """
-    Parse raw OCR text into a list of dicts:
-        [{"name": "leche entera", "price": 0.89, "qty": 1}, ...]
+    Parse raw OCR text from Spanish supermarket receipts.
 
-    Returns only lines that look like purchasable items with a price.
+    Google Vision often reads two-column receipts as two separate blocks:
+    all product names first, then all prices. This parser handles that by:
+    1. Separating lines into "product lines" and "price lines"
+    2. Matching the nth product to the nth price in order
     """
-    items = []
-    lines = raw_text.splitlines()
+    _STANDALONE_PRICE_RE = re.compile(
+        r"^(\d{1,3}[.,]\d{2})\s*(?:€)?$"
+    )
+    _PRODUCT_WITH_QTY_RE = re.compile(
+        r"^(\d+)\s+(.{3,})$"
+    )
+    _SAME_LINE_RE = re.compile(
+        r"^(.+?)\s{2,}(\d{1,3}[.,]\d{2})\s*(?:€)?$"
+    )
+
+    lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
+
+    # First pass — try same-line format
+    # (some receipts do have name + price on the same line)
+    same_line_items = []
+    for line in lines:
+        if _SKIP_RE.match(line):
+            continue
+        m = _SAME_LINE_RE.match(line)
+        if m:
+            name_raw = m.group(1).strip()
+            price_str = m.group(2).replace(",", ".")
+            try:
+                price = float(price_str)
+                if not (0.10 <= price <= 200.0):
+                    continue
+                qty = 1
+                m_qty = _PRODUCT_WITH_QTY_RE.match(name_raw)
+                if m_qty:
+                    qty = int(m_qty.group(1))
+                    name_raw = m_qty.group(2)
+                name = re.sub(r"^\d{4,}\s*", "", name_raw).strip().lower()
+                if len(name) >= 2:
+                    same_line_items.append({
+                        "name": name,
+                        "price": price,
+                        "qty": qty,
+                    })
+            except ValueError:
+                continue
+
+    if same_line_items:
+        return same_line_items
+
+    # Second pass — split into product lines and price lines
+    # then zip them together by position
+    product_lines = []
+    price_lines = []
 
     for line in lines:
-        line = line.strip()
-        if not line or len(line) < 3:
-            continue
         if _SKIP_RE.match(line):
             continue
 
-        m = _PRICE_RE.search(line)
-        if not m:
+        m_price = _STANDALONE_PRICE_RE.match(line)
+        if m_price:
+            price_str = m_price.group(1).replace(",", ".")
+            try:
+                price = float(price_str)
+                if 0.10 <= price <= 200.0:
+                    price_lines.append(price)
+            except ValueError:
+                pass
             continue
 
-        qty_str, price_str = m.group(1), m.group(2)
-
-        # Normalise European decimal comma → dot
-        price_str = price_str.replace(",", ".")
-        try:
-            price = float(price_str)
-        except ValueError:
+        # Skip lines that are purely numeric or very short
+        if re.match(r"^\d+$", line) or len(line) < 3:
             continue
 
-        # Sanity check: grocery items are between €0.10 and €200
-        if not (0.10 <= price <= 200.0):
-            continue
+        product_lines.append(line)
 
-        qty = int(qty_str) if qty_str else 1
-
-        # Product name = everything before the price match, cleaned up
-        name_raw = line[: m.start()].strip()
-        # Remove leading item codes (e.g. "0123 LECHE" → "LECHE")
-        name_raw = re.sub(r"^\d{4,}\s*", "", name_raw)
-        name = name_raw.strip().lower()
-
-        if len(name) < 2:
-            continue
-
-        items.append({"name": name, "price": price, "qty": qty})
+    # Zip products with prices by position
+    items = []
+    for product_line, price in zip(product_lines, price_lines):
+        qty = 1
+        name_raw = product_line
+        m_qty = _PRODUCT_WITH_QTY_RE.match(product_line)
+        if m_qty:
+            qty = int(m_qty.group(1))
+            name_raw = m_qty.group(2)
+        name = re.sub(r"^\d{4,}\s*", "", name_raw).strip().lower()
+        if len(name) >= 2:
+            items.append({"name": name, "price": price, "qty": qty})
 
     return items
 
@@ -168,8 +213,8 @@ def _similarity(a: str, b: str) -> float:
 def match_receipt_to_cart(
     receipt_items: list[dict],
     cart_items: list[dict],
-    name_threshold: float = 0.55,
-    price_tolerance: float = 0.10,
+    name_threshold: float = 0.30,
+    price_tolerance: float = 0.20,
 ) -> dict:
     """
     Fuzzy-match receipt items against cart items.
