@@ -138,9 +138,9 @@ def _dashboard():
     import base64
 
     def _tree_image(pct: float) -> str:
-        if pct < 0.25:
+        if pct < 0.10:
             path = "assets/tree1.png"
-        elif pct < 0.50:
+        elif pct < 0.35:
             path = "assets/tree2.png"
         elif pct < 0.75:
             path = "assets/tree3.png"
