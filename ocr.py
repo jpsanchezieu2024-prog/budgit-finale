@@ -111,10 +111,11 @@ def parse_receipt_lines(raw_text: str) -> list[dict]:
     """
     Parse raw OCR text from Spanish supermarket receipts.
 
-    Google Vision often reads two-column receipts as two separate blocks:
-    all product names first, then all prices. This parser handles that by:
-    1. Separating lines into "product lines" and "price lines"
-    2. Matching the nth product to the nth price in order
+    Strategy:
+    1. Find the product section — starts after "descripcion" header,
+       ends before "total"
+    2. Within that section, separate product name lines from price lines
+    3. Zip them together by position
     """
     _STANDALONE_PRICE_RE = re.compile(
         r"^(\d{1,3}[.,]\d{2})\s*(?:€)?$"
@@ -122,51 +123,42 @@ def parse_receipt_lines(raw_text: str) -> list[dict]:
     _PRODUCT_WITH_QTY_RE = re.compile(
         r"^(\d+)\s+(.{3,})$"
     )
-    _SAME_LINE_RE = re.compile(
-        r"^(.+?)\s{2,}(\d{1,3}[.,]\d{2})\s*(?:€)?$"
+    _SECTION_START_RE = re.compile(
+        r"^(descripci[oó]n|description)$", re.IGNORECASE
+    )
+    _SECTION_END_RE = re.compile(
+        r"^(total|subtotal|tarjeta|efectivo|p\.?\s*unit|importe)", re.IGNORECASE
+    )
+    _NOISE_RE = re.compile(
+        r"^(iva|base|cuota|4%|10%|21%|p\.?\s*unit|importe|descripci|"
+        r"mercadona|lidl|carrefour|d[ií]a|alcampo|aldi|"
+        r"c\/|avda|calle|tel[eé]f|www\.|http|cif|nif|"
+        r"op:|factura|simplificada|tarjeta|bancaria|"
+        r"\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})",
+        re.IGNORECASE
     )
 
     lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
 
-    # First pass — try same-line format
-    # (some receipts do have name + price on the same line)
-    same_line_items = []
-    for line in lines:
-        if _SKIP_RE.match(line):
-            continue
-        m = _SAME_LINE_RE.match(line)
-        if m:
-            name_raw = m.group(1).strip()
-            price_str = m.group(2).replace(",", ".")
-            try:
-                price = float(price_str)
-                if not (0.10 <= price <= 200.0):
-                    continue
-                qty = 1
-                m_qty = _PRODUCT_WITH_QTY_RE.match(name_raw)
-                if m_qty:
-                    qty = int(m_qty.group(1))
-                    name_raw = m_qty.group(2)
-                name = re.sub(r"^\d{4,}\s*", "", name_raw).strip().lower()
-                if len(name) >= 2:
-                    same_line_items.append({
-                        "name": name,
-                        "price": price,
-                        "qty": qty,
-                    })
-            except ValueError:
-                continue
+    # Find the product section boundaries
+    start_idx = 0
+    end_idx = len(lines)
 
-    if same_line_items:
-        return same_line_items
+    for i, line in enumerate(lines):
+        if _SECTION_START_RE.match(line):
+            start_idx = i + 1
+        if i > start_idx and _SECTION_END_RE.match(line):
+            end_idx = i
+            break
 
-    # Second pass — split into product lines and price lines
-    # then zip them together by position
+    product_section = lines[start_idx:end_idx]
+
+    # Separate into product name lines and price lines
     product_lines = []
     price_lines = []
 
-    for line in lines:
-        if _SKIP_RE.match(line):
+    for line in product_section:
+        if _NOISE_RE.match(line):
             continue
 
         m_price = _STANDALONE_PRICE_RE.match(line)
@@ -180,8 +172,8 @@ def parse_receipt_lines(raw_text: str) -> list[dict]:
                 pass
             continue
 
-        # Skip lines that are purely numeric or very short
-        if re.match(r"^\d+$", line) or len(line) < 3:
+        # Skip very short lines or pure numbers
+        if len(line) < 3 or re.match(r"^\d+$", line):
             continue
 
         product_lines.append(line)
