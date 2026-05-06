@@ -631,7 +631,6 @@ if cart_total > _rescue_budget and user.weekly_budget > 0:
 # accidentally close the cart and wipe it.
 # -------------------------------------------------------
 @st.dialog("Confirm end of session")
-@st.dialog("Confirm end of session")
 def _confirm_end_session():
     """
     Two-step save: the user has to explicitly approve clearing the cart
