@@ -206,21 +206,17 @@ def match_receipt_to_cart(
     receipt_items: list[dict],
     cart_items: list[dict],
     name_threshold: float = 0.30,
-    price_tolerance: float = 0.20,
+    price_tolerance: float = 0.10,
 ) -> dict:
     """
-    Fuzzy-match receipt items against cart items.
+    Match receipt items to cart items using price as primary key
+    and name as secondary confirmation.
 
-    Returns:
-    {
-        "verified":   [{"cart_name": ..., "receipt_name": ..., "price": ...}, ...],
-        "unmatched_receipt": [...],   # on receipt but not in cart
-        "unmatched_cart":   [...],    # in cart but not on receipt
-    }
-
-    A match requires:
-      - Name similarity >= name_threshold  (fuzzy, handles abbreviations)
-      - Price within price_tolerance (€)   (handles minor OCR digit errors)
+    Since OCR misaligns names and prices, we trust the price first:
+    if a receipt price matches a cart price exactly (within tolerance),
+    and the name has any reasonable similarity, we call it a match.
+    If multiple cart items have the same price, name similarity breaks
+    the tie.
     """
     verified = []
     unmatched_receipt = []
@@ -235,14 +231,21 @@ def match_receipt_to_cart(
             if c_key in matched_cart_keys:
                 continue
 
-            name_score = _similarity(r_item["name"], c_key)
             price_diff = abs(r_item["price"] - float(c_item["price"]))
 
-            if name_score >= name_threshold and price_diff <= price_tolerance:
-                combined = name_score - (price_diff * 0.1)
-                if combined > best_score:
-                    best_score = combined
-                    best_cart = c_item
+            # Price must match within tolerance
+            if price_diff > price_tolerance:
+                continue
+
+            # Price matches — use name similarity as tiebreaker
+            name_score = _similarity(r_item["name"], c_key)
+
+            # Accept any name score if price matches exactly
+            # Only require name threshold if multiple items share price
+            combined = name_score + (1.0 - price_diff)
+            if combined > best_score:
+                best_score = combined
+                best_cart = c_item
 
         if best_cart is not None:
             matched_cart_keys.add(best_cart["name"].lower().strip())
