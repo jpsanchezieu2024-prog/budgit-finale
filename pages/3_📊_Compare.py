@@ -167,7 +167,7 @@ outside the top 10.
 # -------------------------------------------------------
 st.divider()
 st.markdown("#### Global product prices")
-st.caption("Latest price logged by any Budgit user at each store.")
+st.caption("Latest price logged by any Budgit user at each store. ✅ means the price was verified against a receipt photo.")
 
 ht = get_item_directory()
 
@@ -225,11 +225,15 @@ else:
                     color = "#40B391" if is_min else "#E8F5EF"
                     weight = "800" if is_min else "400"
                     crown = " 👑" if is_min else ""
+                    entry = prices[store]
+                    is_verified = entry.get("verified", False) if isinstance(entry, dict) else False
+                    price_val = entry.get("price", entry) if isinstance(entry, dict) else entry
+                    verified_badge = "<span style='font-size:0.7rem;'> ✅</span>" if is_verified else ""
                     col.markdown(
                         f"<div class='budgit-card' style='text-align:center; padding:0.8rem;'>"
                         f"<div style='color:#7FB5A0; font-size:0.75rem;'>{store}{crown}</div>"
                         f"<div style='color:{color}; font-weight:{weight}; font-size:1.3rem;'>"
-                        f"€{prices[store]:.2f}</div>"
+                        f"€{price_val:.2f}{verified_badge}</div>"
                         f"</div>",
                         unsafe_allow_html=True,
                     )
@@ -247,11 +251,14 @@ else:
     if single_store and not q:
         with st.expander(f"📦 {len(single_store)} products seen at only one store"):
             for product in single_store:
-                store, price = list(product["prices"].items())[0]
+                store, entry = list(product["prices"].items())[0]
+                price_val = entry.get("price", entry) if isinstance(entry, dict) else entry
+                is_verified = entry.get("verified", False) if isinstance(entry, dict) else False
+                verified_badge = " ✅" if is_verified else ""
                 st.markdown(
                     f"<div class='budgit-item'>"
                     f"<span>{product['name'].title()}</span>"
-                    f"<span style='color:#7FB5A0; font-size:0.85rem;'>{store}: €{price:.2f}</span>"
+                    f"<span style='color:#7FB5A0; font-size:0.85rem;'>{store}: €{price_val:.2f}{verified_badge}</span>"
                     f"</div>",
                     unsafe_allow_html=True,
                 )

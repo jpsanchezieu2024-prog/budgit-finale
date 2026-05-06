@@ -66,7 +66,7 @@ if st.session_state.pop("first_time_user", False):
     )
 
 st.markdown("### 🛒 Shopping session")
-st.caption("Add items as you shop. Prices auto-fill from your history and the global directory.")
+st.caption("Add items as you shop. Prices auto-fill from your history and the global directory. ✅ means a price has been verified against a receipt photo.")
 
 store = st.selectbox(
     "Shopping at",
@@ -315,21 +315,24 @@ if typed:
         current_price = all_prices.get(store)
 
         chip_html = []
-        for s_name, p in sorted_prices:
-            if s_name == cheapest_store and len(sorted_prices) > 1:
+        for s_name, entry in ranked:
+            is_verified = entry.get("verified", False) if isinstance(entry, dict) else False
+            verified_badge = "<span style='font-size:0.7rem; color:#40B391;'> ✅</span>" if is_verified else ""
+
+            if s_name == cheapest_store and len(ranked) > 1:
                 chip_html.append(
-                    f"<span style='color:#40B391; font-weight:700; margin-right:10px;'>"
-                    f"👑 {s_name} €{p:.2f}</span>"
+                    f"<div style='display:inline-block; margin:0 10px 4px 0; color:#40B391; font-weight:700;'>"
+                    f"👑 {s_name} €{entry['price']:.2f}{verified_badge}</div>"
                 )
             elif s_name == store:
                 chip_html.append(
-                    f"<span style='color:#E8F5EF; font-weight:600; margin-right:10px;'>"
-                    f"{s_name} €{p:.2f} (here)</span>"
+                    f"<div style='display:inline-block; margin:0 10px 4px 0; color:#E8F5EF; font-weight:600;'>"
+                    f"{s_name} €{entry['price']:.2f} (here){verified_badge}</div>"
                 )
             else:
                 chip_html.append(
-                    f"<span style='color:#7FB5A0; margin-right:10px;'>"
-                    f"{s_name} €{p:.2f}</span>"
+                    f"<div style='display:inline-block; margin:0 10px 4px 0; color:#7FB5A0;'>"
+                    f"{s_name} €{entry['price']:.2f}{verified_badge}</div>"
                 )
 
         savings_msg = ""
@@ -658,19 +661,55 @@ def _confirm_end_session():
         "your cart is emptied so you can start a new shop."
     )
 
+    st.divider()
+    st.markdown("#### 📷 Verify with receipt (optional but recommended)")
+    st.caption("Upload a photo of your receipt to verify prices in the shared database.")
+    receipt_file = st.file_uploader(
+        "Receipt photo", type=["jpg", "jpeg", "png", "webp"],
+        label_visibility="collapsed",
+    )
+
+    if receipt_file is not None:
+        from ocr import process_receipt
+        with st.spinner("Reading receipt..."):
+            result = process_receipt(
+                receipt_file.read(),
+                cart.to_session_dicts(),
+            )
+        if result["error"]:
+            st.warning(f"Could not read receipt: {result['error']}")
+        else:
+            n_verified = len(result["verified"])
+            n_total = len(cart.to_session_dicts())
+            st.success(f"✅ Verified {n_verified} of {n_total} items from your receipt.")
+            if result["unmatched_cart"]:
+                names = ", ".join(i["name"].title() for i in result["unmatched_cart"])
+                st.caption(f"Could not match: {names}")
+            st.session_state["_receipt_result"] = result
+
     btn_save, btn_cancel = st.columns(2)
     if btn_save.button("✅ Save & end session", type="primary",
-                       use_container_width=True, key="dlg_confirm_save"):
         # Capture totals BEFORE clearing the cart so we can show them
         # in the post-save success banner.
         final_total = cart.total()
         final_store = store
 
-        db.save_session(
-            user.id, store,
-            cart.to_session_dicts(), cart.total(),
-            directory=get_item_directory(),
+        receipt_result = st.session_state.pop("_receipt_result", None)
+        session_items = cart.to_session_dicts()
+        verified_names = (
+        {v["cart_name"].lower().strip() for v in receipt_result["verified"]}
+        if receipt_result else set()
         )
+        session_id = db.save_session(
+        user.id, store, session_items, cart.total(),
+        directory=get_item_directory(),
+        )
+        # Write verified flag into the global directory for matched items
+        for item in session_items:
+        is_verified = item["name"].lower().strip() in verified_names
+    db.add_to_directory(item["name"], item["price"], store, verified=is_verified)
+    if verified_names:
+        db.save_receipt_upload(user.id, session_id, list(verified_names))
         cart.clear()
         # Saved session changes the user's "most-bought" stats — drop
         # the cache so the quick-add chips refresh on next render.

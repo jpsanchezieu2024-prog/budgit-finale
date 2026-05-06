@@ -117,11 +117,21 @@ for s in rows:
             st.caption("_No items recorded._")
         else:
             for it in items:
+                from state import lookup_in_directory
+
+                entry = lookup_in_directory(it["name"], s["supermarket"])
+                # entry is a float from the normalised directory —
+                # fetch the raw entry to check verified flag
+                ht = __import__('streamlit').session_state.get("item_directory_ht")
+                raw = ht.get(it["name"].lower().strip()) if ht else None
+                raw_store = raw.get("prices", {}).get(s["supermarket"], {}) if raw else {}
+                is_verified = raw_store.get("verified", False) if isinstance(raw_store, dict) else False
+                verified_badge = " ✅" if is_verified else ""
                 st.markdown(
                     f"<div class='budgit-item' style='border-left:4px solid {style['color']};'>"
-                    f"<div><b>{it['name'].title()}</b> "
+                    f"<div><b>{it['name'].title()}</b>{verified_badge} "
                     f"<span style='color:#5C6B66; font-size:0.85rem;'>× {it['qty']}</span></div>"
-                    f"<div>€{it['price']*it['qty']:.2f}</div>"
+                    f"<div>€{it['price'] * it['qty']:.2f}</div>"
                     f"</div>",
                     unsafe_allow_html=True,
                 )

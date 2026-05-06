@@ -290,8 +290,31 @@ def lookup_in_directory(name: str, supermarket: str = None):
         return _normalise_price(entry) if entry is not None else None
     return {s: _normalise_price(e) for s, e in prices.items()}
 
+def lookup_directory_full(name: str) -> dict:
+    """
+    Returns full entry per store including price and verified flag:
+        { "Mercadona": {"price": 0.89, "verified": True}, ... }
+    """
+    ht = get_item_directory()
+    result = ht.get(name.lower().strip())
+    if result is None:
+        return {}
+    raw_prices = result.get("prices", {})
+    full = {}
+    for store, entry in raw_prices.items():
+        if isinstance(entry, dict):
+            full[store] = {
+                "price":    float(entry.get("price", 0.0)),
+                "verified": bool(entry.get("verified", False)),
+            }
+        else:
+            full[store] = {
+                "price":    float(entry),
+                "verified": False,
+            }
+    return full
 
-def update_directory_in_memory(name: str, price: float, supermarket: str) -> None:
+def update_directory_in_memory(name: str, price: float, supermarket: str, verified: bool = False) -> None:
     """
     After adding an item, mirror the change in the in-memory directory
     so subsequent same-render lookups see the new value without

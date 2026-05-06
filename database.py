@@ -202,17 +202,18 @@ def get_all_products(user_id):
 # This way when someone types "milk" at Mercadona, they get
 # the latest price anyone paid for milk at Mercadona.
 # -------------------------------------------------------
-def add_to_directory(name: str, price: float, supermarket: str):
+def add_to_directory(name: str, price: float, supermarket: str, verified: bool = False):
     """
     Update the global directory with the latest price for this product
-    at this supermarket. Each store entry is stored as a plain float
-    keyed by store name:
+    at this supermarket.
 
-        prices = {"Mercadona": 0.89, "Lidl": 0.75, ...}
+    If `verified=True` the entry was cross-checked against a receipt
+    photo. The verified flag is stored alongside the price:
 
-    A previous schema variant stored entries as dicts with extra
-    metadata; those are normalised back to plain floats on read in
-    `state._normalise_price`.
+        prices = {
+            "Mercadona": {"price": 0.89, "verified": True},
+            "Lidl":      {"price": 0.75, "verified": False},
+        }
     """
     key = name.lower().strip()
     doc_ref = db.collection("item_directory").document(key)
@@ -222,19 +223,45 @@ def add_to_directory(name: str, price: float, supermarket: str):
     if doc.exists:
         data = doc.to_dict()
         prices = data.get("prices", {})
-        prices[supermarket] = round(float(price), 2)
+        existing = prices.get(supermarket, {})
+        already_verified = (
+            existing.get("verified", False)
+            if isinstance(existing, dict) else False
+        )
+        prices[supermarket] = {
+            "price":    round(float(price), 2),
+            "verified": already_verified or verified,
+        }
         doc_ref.update({
-            "prices": prices,
+            "prices":       prices,
             "last_updated": now,
-            "times_added": data.get("times_added", 0) + 1,
+            "times_added":  data.get("times_added", 0) + 1,
         })
     else:
         doc_ref.set({
-            "name": key,
-            "prices": {supermarket: round(float(price), 2)},
+            "name":  key,
+            "prices": {
+                supermarket: {
+                    "price":    round(float(price), 2),
+                    "verified": verified,
+                }
+            },
             "last_updated": now,
-            "times_added": 1,
+            "times_added":  1,
         })
+
+
+def save_receipt_upload(user_id: str, session_id: str, verified_names: list[str]) -> None:
+    """
+    Record that the user uploaded a receipt for this session and which
+    item names were successfully verified against it.
+    """
+    db.collection("receipt_uploads").add({
+        "user_id":        user_id,
+        "session_id":     session_id,
+        "verified_names": verified_names,
+        "uploaded_at":    datetime.utcnow().isoformat(),
+    })
 
 
 def get_full_directory() -> list:

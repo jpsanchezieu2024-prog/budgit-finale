@@ -106,7 +106,7 @@ if to_remove:
 # -------------------------------------------------------
 st.divider()
 st.markdown("#### 🏆 Where should you shop?")
-st.caption("Based on the latest prices logged by all Budgit users.")
+st.caption("Based on the latest prices logged by all Budgit users. ✅ means the price was verified against a receipt photo.")
 
 ht = get_item_directory()
 
@@ -206,10 +206,17 @@ else:
             )
         else:
             best_store = min(row["prices"], key=row["prices"].get)
+            def _fmt_store(s, p, best_store, ht, item_name):
+                raw = ht.get(item_name.lower().strip()) if ht else None
+                raw_entry = raw.get("prices", {}).get(s, {}) if raw else {}
+                is_verified = raw_entry.get("verified", False) if isinstance(raw_entry, dict) else False
+                badge = " ✅" if is_verified else ""
+                if s == best_store:
+                    return f"<b style='color:#40B391;'>{s}: €{p:.2f}{badge}</b>"
+                return f"{s}: €{p:.2f}{badge}"
+
             prices_text = " · ".join(
-                f"<b style='color:#40B391;'>{s}: €{p:.2f}</b>"
-                if s == best_store
-                else f"{s}: €{p:.2f}"
+                _fmt_store(s, p, best_store, ht, row["name"])
                 for s, p in sorted(row["prices"].items())
             )
             st.markdown(
