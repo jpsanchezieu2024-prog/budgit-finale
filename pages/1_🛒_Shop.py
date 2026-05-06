@@ -631,6 +631,7 @@ if cart_total > _rescue_budget and user.weekly_budget > 0:
 # accidentally close the cart and wipe it.
 # -------------------------------------------------------
 @st.dialog("Confirm end of session")
+@st.dialog("Confirm end of session")
 def _confirm_end_session():
     """
     Two-step save: the user has to explicitly approve clearing the cart
@@ -689,35 +690,30 @@ def _confirm_end_session():
 
     btn_save, btn_cancel = st.columns(2)
     if btn_save.button("✅ Save & end session", type="primary",
-        # Capture totals BEFORE clearing the cart so we can show them
-        # in the post-save success banner.
+                       use_container_width=True, key="dlg_confirm_save"):
         final_total = cart.total()
         final_store = store
 
         receipt_result = st.session_state.pop("_receipt_result", None)
         session_items = cart.to_session_dicts()
         verified_names = (
-        {v["cart_name"].lower().strip() for v in receipt_result["verified"]}
-        if receipt_result else set()
+            {v["cart_name"].lower().strip() for v in receipt_result["verified"]}
+            if receipt_result else set()
         )
         session_id = db.save_session(
-        user.id, store, session_items, cart.total(),
-        directory=get_item_directory(),
+            user.id, store, session_items, cart.total(),
+            directory=get_item_directory(),
         )
-        # Write verified flag into the global directory for matched items
         for item in session_items:
-        is_verified = item["name"].lower().strip() in verified_names
-    db.add_to_directory(item["name"], item["price"], store, verified=is_verified)
-    if verified_names:
-        db.save_receipt_upload(user.id, session_id, list(verified_names))
+            is_verified = item["name"].lower().strip() in verified_names
+            db.add_to_directory(item["name"], item["price"], store, verified=is_verified)
+        if verified_names:
+            db.save_receipt_upload(user.id, session_id, list(verified_names))
+
         cart.clear()
-        # Saved session changes the user's "most-bought" stats — drop
-        # the cache so the quick-add chips refresh on next render.
         st.session_state.pop("top_items", None)
         st.session_state.session_just_saved = (final_total, final_store)
 
-        # Run the post-save milestone check and queue any newly-earned
-        # badges so the next render of the page shows toasts for them.
         newly_earned = db.check_session_milestones(user.id)
         if newly_earned:
             existing = st.session_state.get("pending_badges", [])
@@ -728,16 +724,3 @@ def _confirm_end_session():
     if btn_cancel.button("❌ Cancel", use_container_width=True,
                          key="dlg_confirm_cancel"):
         st.rerun()
-
-
-st.divider()
-col1, col2 = st.columns(2)
-with col1:
-    if st.button("🧹 Clear cart", use_container_width=True,
-                 disabled=len(cart) == 0):
-        cart.clear()
-        st.rerun()
-with col2:
-    if st.button("💾 End & Save Session", type="primary",
-                 use_container_width=True, disabled=len(cart) == 0):
-        _confirm_end_session()
