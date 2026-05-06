@@ -723,3 +723,15 @@ def _confirm_end_session():
     if btn_cancel.button("❌ Cancel", use_container_width=True,
                          key="dlg_confirm_cancel"):
         st.rerun()
+
+st.divider()
+col1, col2 = st.columns(2)
+with col1:
+    if st.button("🧹 Clear cart", use_container_width=True,
+                 disabled=len(cart) == 0):
+        cart.clear()
+        st.rerun()
+with col2:
+    if st.button("💾 End & Save Session", type="primary",
+                 use_container_width=True, disabled=len(cart) == 0):
+        _confirm_end_session()
