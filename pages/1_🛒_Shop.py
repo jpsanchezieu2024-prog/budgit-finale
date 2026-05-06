@@ -308,11 +308,13 @@ if typed:
     # absolute price. Cheapest gets a 👑, the user's current store is
     # bolded, and a "Save €X by going to Y" line appears when there's
     # a meaningfully cheaper alternative.
-    all_prices = lookup_in_directory(typed)
-    if all_prices:
-        sorted_prices = sorted(all_prices.items(), key=lambda kv: kv[1])
-        cheapest_store, cheapest_price = sorted_prices[0]
-        current_price = all_prices.get(store)
+    from state import lookup_directory_full
+
+    full_entries = lookup_directory_full(typed)
+    if full_entries:
+        ranked = sorted(full_entries.items(), key=lambda kv: kv[1]["price"])
+        cheapest_store, cheapest_entry = ranked[0]
+        current_entry = full_entries.get(store)
 
         chip_html = []
         for s_name, entry in ranked:
@@ -336,16 +338,18 @@ if typed:
                 )
 
         savings_msg = ""
-        if (current_price is not None
+        if (
+                current_entry is not None
                 and cheapest_store != store
-                and current_price > cheapest_price):
-            savings = current_price - cheapest_price
+                and current_entry["price"] > cheapest_entry["price"]
+        ):
+            savings = current_entry["price"] - cheapest_entry["price"]
             savings_msg = (
                 f"<div style='color:#FFB84D; font-size:0.82rem; margin-top:0.4rem;'>"
                 f"💡 Save <b>€{savings:.2f}</b> by going to {cheapest_store}"
                 f"</div>"
             )
-        elif current_price is None and len(sorted_prices) >= 1:
+        elif current_entry is None and len(ranked) >= 1:
             savings_msg = (
                 f"<div style='color:#7FB5A0; font-size:0.78rem; margin-top:0.25rem;'>"
                 f"No price on file for this item at {store}."
