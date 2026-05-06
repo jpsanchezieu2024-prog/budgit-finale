@@ -689,6 +689,10 @@ def _confirm_end_session():
             if result["unmatched_cart"]:
                 names = ", ".join(i["name"].title() for i in result["unmatched_cart"])
                 st.caption(f"Could not match: {names}")
+            with st.expander("🔍 Debug — raw OCR output"):
+                st.text(result["raw_text"])
+            with st.expander("🔍 Debug — parsed receipt items"):
+                st.write(result["receipt_items"])
             st.session_state["_receipt_result"] = result
 
     btn_save, btn_cancel = st.columns(2)
