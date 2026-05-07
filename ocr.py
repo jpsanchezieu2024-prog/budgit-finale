@@ -3,15 +3,21 @@ Budgit — OCR receipt parser using Google Cloud Vision API.
 
 Supports Spanish supermarkets: Mercadona, Lidl, Carrefour, Dia, Al Campo, Aldi.
 
+Uses document_text_detection (not text_detection) to get bounding box
+coordinates for every word. This lets us reconstruct the table structure
+of a receipt — pairing each product name with the price on the same row —
+regardless of the order Vision reads the columns.
+
 Flow:
     1. Receive image bytes from Streamlit file_uploader
-    2. Send to Google Vision API (TEXT_DETECTION)
-    3. Parse the raw text into (name, price) pairs
-    4. Fuzzy-match against the user's cart items
-    5. Return matched and unmatched results for UI display
+    2. Send to Google Vision API (DOCUMENT_TEXT_DETECTION)
+    3. Extract every word with its Y midpoint coordinate
+    4. Group words into rows by Y proximity
+    5. Within each row: left side = product name, right side = price
+    6. Filter out header/footer noise
+    7. Fuzzy-match against the user's cart items by name + price
 """
 
-import io
 import json
 import os
 import re
@@ -22,17 +28,11 @@ from google.oauth2 import service_account
 
 
 # ---------------------------------------------------------------------------
-# Client setup — reuse the same FIREBASE_KEY_JSON credential
+# Client setup
 # ---------------------------------------------------------------------------
 def _get_vision_client():
-    """
-    Build a Vision API client from the same service account used for
-    Firebase. Tries GOOGLE_APPLICATION_CREDENTIALS_JSON first (Railway),
-    then falls back to FIREBASE_KEY_JSON, then to ADC.
-    """
     raw = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON") or \
           os.environ.get("FIREBASE_KEY_JSON")
-
     if raw:
         info = json.loads(raw)
         creds = service_account.Credentials.from_service_account_info(
@@ -40,165 +40,157 @@ def _get_vision_client():
             scopes=["https://www.googleapis.com/auth/cloud-platform"],
         )
         return vision.ImageAnnotatorClient(credentials=creds)
-
-    # Local dev: use application default credentials
     return vision.ImageAnnotatorClient()
 
 
 # ---------------------------------------------------------------------------
-# Core OCR call
+# Noise filters
 # ---------------------------------------------------------------------------
-def extract_text_from_image(image_bytes: bytes) -> str:
+_NOISE_RE = re.compile(
+    r"^(total|subtotal|iva|base\s*imponible|cuota|4%|10%|21%"
+    r"|p\.?\s*unit|importe|descripci[oó]n"
+    r"|mercadona|lidl|carrefour|d[ií]a|alcampo|aldi"
+    r"|c\/|avda|calle|tel[eé]f|www\.|http|cif|nif"
+    r"|op:|factura|simplificada|tarjeta|bancaria|efectivo|cambio"
+    r"|puntos|socio|cliente|gracias|ticket"
+    r"|\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}"
+    r"|\d{2}:\d{2}"
+    r"|a-\d+)",
+    re.IGNORECASE,
+)
+
+_PRICE_RE = re.compile(r"^\d{1,3}[.,]\d{2}$")
+
+
+# ---------------------------------------------------------------------------
+# Core: extract words with coordinates
+# ---------------------------------------------------------------------------
+def _extract_words_with_coords(image_bytes: bytes) -> list[dict]:
     """
-    Send image bytes to Google Vision and return the raw detected text.
-    Raises RuntimeError if the API call fails.
+    Call Vision document_text_detection and return a flat list of:
+        {"text": "LECHE", "x": 120, "y": 340}
+
+    x = horizontal midpoint of the word's bounding box
+    y = vertical midpoint of the word's bounding box
     """
     client = _get_vision_client()
     image = vision.Image(content=image_bytes)
-    response = client.text_detection(image=image)
+    response = client.document_text_detection(image=image)
 
     if response.error.message:
         raise RuntimeError(f"Vision API error: {response.error.message}")
 
-    texts = response.text_annotations
-    if not texts:
-        return ""
+    words = []
+    for page in response.full_text_annotation.pages:
+        for block in page.blocks:
+            for paragraph in block.paragraphs:
+                for word in paragraph.words:
+                    text = "".join(s.text for s in word.symbols)
+                    verts = word.bounding_box.vertices
+                    xs = [v.x for v in verts]
+                    ys = [v.y for v in verts]
+                    x = sum(xs) / len(xs)
+                    y = sum(ys) / len(ys)
+                    words.append({"text": text, "x": x, "y": y})
 
-    # The first annotation is the full document text
-    return texts[0].description
+    return words
 
 
 # ---------------------------------------------------------------------------
-# Receipt line parser
-#
-# Spanish supermarket receipts generally follow one of two layouts:
-#
-#   PRODUCT NAME          1,29
-#   PRODUCT NAME   1 x   1,29
-#
-# Prices use comma as decimal separator (European format).
-# We ignore lines that look like totals, taxes, headers, or store metadata.
+# Group words into rows by Y proximity
 # ---------------------------------------------------------------------------
-
-# Lines to skip — common receipt noise in Spanish supermarkets
-_SKIP_PATTERNS = [
-    r"^(total|subtotal|iva|imp|ticket|factura|gracias|fecha|hora|cajero"
-    r"|tarjeta|efectivo|cambio|cif|nif|tel[eé]fono|www\.|http"
-    r"|mercadona|lidl|carrefour|d[ií]a|alcampo|al campo|aldi"
-    r"|supermercado|hipermercado|c\/|avda|calle|plaza"
-    r"|visa|mastercard|contactless|n[uú]mero|referencia"
-    r"|op\.|terminal|aut\.|importe|entregado|devuelto"
-    r"|puntos|socio|cliente|member)",
-    r"^\*+$",
-    r"^-+$",
-    r"^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}",   # dates
-    r"^\d{2}:\d{2}",                            # times
-    r"^\d{10,}",                                # barcodes / long numbers
-]
-_SKIP_RE = re.compile("|".join(_SKIP_PATTERNS), re.IGNORECASE)
-
-# Price pattern: optional qty, optional "x", then the price
-# Handles: 1,29 / 1.29 / 2 x 1,29 / 1 ud 0,99
-_PRICE_RE = re.compile(
-    r"(?:(\d+)\s*[xXuU][dD]?\s*)?"   # optional qty like "2 x" or "1 ud"
-    r"(\d{1,3}[.,]\d{2})"            # price like 1,29 or 12.99
-    r"\s*(?:€|eur?)?\s*$",
-    re.IGNORECASE,
-)
-
-
-def parse_receipt_lines(raw_text: str) -> list[dict]:
+def _group_into_rows(words: list[dict], y_tolerance: int = 12) -> list[list[dict]]:
     """
-    Parse raw OCR text from Spanish supermarket receipts.
-
-    Strategy:
-    1. Find the product section — starts after "descripcion" header,
-       ends before "total"
-    2. Within that section, separate product name lines from price lines
-    3. Zip them together by position
+    Group words that share approximately the same Y coordinate into rows.
+    Words within y_tolerance pixels of each other are on the same line.
+    Returns rows sorted top-to-bottom, each row sorted left-to-right.
     """
-    _STANDALONE_PRICE_RE = re.compile(
-        r"^(\d{1,3}[.,]\d{2})\s*(?:€)?$"
-    )
-    _PRODUCT_WITH_QTY_RE = re.compile(
-        r"^(\d+)\s+(.{3,})$"
-    )
-    _SECTION_START_RE = re.compile(
-        r"^(descripci[oó]n|description)$", re.IGNORECASE
-    )
-    _SECTION_END_RE = re.compile(
-        r"^(total|subtotal|tarjeta|efectivo|p\.?\s*unit|importe)", re.IGNORECASE
-    )
-    _NOISE_RE = re.compile(
-        r"^(iva|base|cuota|4%|10%|21%|p\.?\s*unit|importe|descripci|"
-        r"mercadona|lidl|carrefour|d[ií]a|alcampo|aldi|"
-        r"c\/|avda|calle|tel[eé]f|www\.|http|cif|nif|"
-        r"op:|factura|simplificada|tarjeta|bancaria|"
-        r"\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})",
-        re.IGNORECASE
-    )
+    if not words:
+        return []
 
-    lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
+    sorted_words = sorted(words, key=lambda w: w["y"])
+    rows = []
+    current_row = [sorted_words[0]]
 
-    # Find the product section boundaries
-    start_idx = 0
-    end_idx = len(lines)
+    for word in sorted_words[1:]:
+        if abs(word["y"] - current_row[-1]["y"]) <= y_tolerance:
+            current_row.append(word)
+        else:
+            rows.append(sorted(current_row, key=lambda w: w["x"]))
+            current_row = [word]
 
-    for i, line in enumerate(lines):
-        if _SECTION_START_RE.match(line):
-            start_idx = i + 1
-        if i > start_idx and _SECTION_END_RE.match(line):
-            end_idx = i
-            break
+    if current_row:
+        rows.append(sorted(current_row, key=lambda w: w["x"]))
 
-    product_section = lines[start_idx:end_idx]
+    return rows
 
-    # Separate into product name lines and price lines
-    product_lines = []
-    price_lines = []
 
-    for line in product_section:
-        if _NOISE_RE.match(line):
-            continue
-
-        m_price = _STANDALONE_PRICE_RE.match(line)
-        if m_price:
-            price_str = m_price.group(1).replace(",", ".")
-            try:
-                price = float(price_str)
-                if 0.10 <= price <= 200.0:
-                    price_lines.append(price)
-            except ValueError:
-                pass
-            continue
-
-        # Skip very short lines or pure numbers
-        if len(line) < 3 or re.match(r"^\d+$", line):
-            continue
-
-        product_lines.append(line)
-
-    # Zip products with prices by position
+# ---------------------------------------------------------------------------
+# Extract product/price pairs from rows
+# ---------------------------------------------------------------------------
+def _rows_to_items(rows: list[list[dict]], image_width: float) -> list[dict]:
+    """
+    For each row:
+    - The rightmost word that looks like a price IS the price
+    - Everything to the left of it is the product name
+    - Skip rows that are noise (headers, totals, store info)
+    """
+    price_zone_x = image_width * 0.60 if image_width > 0 else float("inf")
     items = []
-    for product_line, price in zip(product_lines, price_lines):
+
+    for row in rows:
+        price_val = None
+        price_word_idx = None
+
+        for i, word in enumerate(row):
+            if _PRICE_RE.match(word["text"]) and word["x"] >= price_zone_x:
+                price_str = word["text"].replace(",", ".")
+                try:
+                    p = float(price_str)
+                    if 0.10 <= p <= 200.0:
+                        # Keep the rightmost valid price
+                        price_val = p
+                        price_word_idx = i
+                except ValueError:
+                    pass
+
+        if price_val is None:
+            continue
+
+        # Product name = all words to the left of the price word
+        name_words = [w["text"] for w in row[:price_word_idx]]
+        if not name_words:
+            continue
+
+        name_raw = " ".join(name_words).strip()
+
+        # Skip noise rows
+        if _NOISE_RE.match(name_raw):
+            continue
+
+        # Extract leading quantity (e.g. "2 SALSA TIKKA" → qty=2)
         qty = 1
-        name_raw = product_line
-        m_qty = _PRODUCT_WITH_QTY_RE.match(product_line)
-        if m_qty:
-            qty = int(m_qty.group(1))
-            name_raw = m_qty.group(2)
-        name = re.sub(r"^\d{4,}\s*", "", name_raw).strip().lower()
-        if len(name) >= 2:
-            items.append({"name": name, "price": price, "qty": qty})
+        qty_match = re.match(r"^(\d+)\s+(.{2,})$", name_raw)
+        if qty_match:
+            qty = int(qty_match.group(1))
+            name_raw = qty_match.group(2)
+
+        # Remove leading item codes
+        name_raw = re.sub(r"^\d{4,}\s*", "", name_raw)
+        name = name_raw.strip().lower()
+
+        if len(name) < 2:
+            continue
+
+        items.append({"name": name, "price": price_val, "qty": qty})
 
     return items
 
 
 # ---------------------------------------------------------------------------
-# Fuzzy matching — receipt items vs cart items
+# Fuzzy matching
 # ---------------------------------------------------------------------------
 def _similarity(a: str, b: str) -> float:
-    """Return a 0-1 similarity score between two strings."""
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 
@@ -209,14 +201,9 @@ def match_receipt_to_cart(
     price_tolerance: float = 0.10,
 ) -> dict:
     """
-    Match receipt items to cart items using price as primary key
-    and name as secondary confirmation.
-
-    Since OCR misaligns names and prices, we trust the price first:
-    if a receipt price matches a cart price exactly (within tolerance),
-    and the name has any reasonable similarity, we call it a match.
-    If multiple cart items have the same price, name similarity breaks
-    the tie.
+    Match receipt items to cart items using name similarity and price proximity.
+    Name threshold is kept low to handle abbreviated receipt names vs
+    user-entered names (e.g. "paté r.med. salmón" vs "paté salmón").
     """
     verified = []
     unmatched_receipt = []
@@ -232,17 +219,14 @@ def match_receipt_to_cart(
                 continue
 
             price_diff = abs(r_item["price"] - float(c_item["price"]))
-
-            # Price must match within tolerance
             if price_diff > price_tolerance:
                 continue
 
-            # Price matches — use name similarity as tiebreaker
             name_score = _similarity(r_item["name"], c_key)
+            if name_score < name_threshold:
+                continue
 
-            # Accept any name score if price matches exactly
-            # Only require name threshold if multiple items share price
-            combined = name_score + (1.0 - price_diff)
+            combined = name_score * 2 + (1.0 - price_diff)
             if combined > best_score:
                 best_score = combined
                 best_cart = c_item
@@ -271,19 +255,15 @@ def match_receipt_to_cart(
 
 
 # ---------------------------------------------------------------------------
-# Main entry point called from the Shop page
+# Main entry point
 # ---------------------------------------------------------------------------
 def process_receipt(image_bytes: bytes, cart_items: list[dict]) -> dict:
     """
-    Full pipeline: image bytes → OCR → parse → match against cart.
-
-    Returns the same dict as match_receipt_to_cart, plus:
-        "raw_text":      the full OCR string (for debug display)
-        "receipt_items": all parsed receipt lines before matching
-        "error":         None or an error string if something failed
+    Full pipeline: image bytes → bounding box extraction → row grouping
+    → product/price pairing → fuzzy match against cart.
     """
     try:
-        raw_text = extract_text_from_image(image_bytes)
+        words = _extract_words_with_coords(image_bytes)
     except Exception as e:
         return {
             "error":             str(e),
@@ -294,7 +274,25 @@ def process_receipt(image_bytes: bytes, cart_items: list[dict]) -> dict:
             "unmatched_cart":    cart_items,
         }
 
-    receipt_items = parse_receipt_lines(raw_text)
+    if not words:
+        return {
+            "error":             "No text detected in image.",
+            "raw_text":          "",
+            "receipt_items":     [],
+            "verified":          [],
+            "unmatched_receipt": [],
+            "unmatched_cart":    cart_items,
+        }
+
+    # Reconstruct raw text for debug display
+    raw_text = " ".join(
+        w["text"] for w in sorted(words, key=lambda w: (w["y"], w["x"]))
+    )
+
+    image_width = max(w["x"] for w in words) if words else 0
+    rows = _group_into_rows(words)
+    receipt_items = _rows_to_items(rows, image_width)
+
     result = match_receipt_to_cart(receipt_items, cart_items)
     result["raw_text"] = raw_text
     result["receipt_items"] = receipt_items
